@@ -252,6 +252,7 @@ impl GameState {
                 let grounded = s.body.iter().any(|&p| {
                     let below_y = p.y + 1;
                     if below_y >= self.height { return true; }
+                    if p.x < 0 || p.x >= self.width { return false; }
                     let below_ci = below_y as usize * w + p.x as usize;
                     if self.grid[below_ci] { return true; }
                     if pow[below_ci] { return true; }
