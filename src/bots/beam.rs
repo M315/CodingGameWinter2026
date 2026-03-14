@@ -88,17 +88,22 @@ impl Bot for BeamSearchBot {
         beam.sort_unstable_by(|a, b| b.2.cmp(&a.2));
         beam.truncate(self.beam_width);
 
+        // Always keep the depth-0 best action as fallback. If the inner time check fires
+        // before expanding any state at a deeper level, we return this rather than an
+        // empty HashMap (which would silently produce "WAIT" and ignore food/walls).
+        let mut result: HashMap<u8, Dir> = beam.first()
+            .map(|(a, _, _)| a.clone())
+            .unwrap_or_default();
+
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
 
             // mem::take so we own the vec and can break early without drain issues.
-            // beam is already sorted best-first, so breaking early keeps the best work.
+            // beam is already sorted best-first, so breaking early expands the most
+            // promising states and discards only the lower-scoring tail.
             let cur_beam = std::mem::take(&mut beam);
             let mut next: Vec<BeamItem> = Vec::with_capacity(cur_beam.len() * 9);
             for (first_acts, cur, _) in cur_beam {
-                // Inner time check: stop expanding once budget is exhausted.
-                // Safe to break here because cur_beam is sorted best-first —
-                // remaining states are lower-scoring than what we've already expanded.
                 if t0.elapsed() >= limit { break; }
                 if cur.is_over() {
                     let score = heuristic(&cur, player);
@@ -107,8 +112,7 @@ impl Bot for BeamSearchBot {
                 }
                 let my_combos = gen_action_combos(&cur, player);
                 let opp_acts  = greedy_actions(&cur, 1 - player);
-                let cap = self.beam_width.min(my_combos.len());
-                for combo in my_combos.into_iter().take(cap) {
+                for combo in my_combos {
                     let mut combined = combo;
                     for (&k, &v) in &opp_acts { combined.entry(k).or_insert(v); }
                     let mut ns = cur.clone();
@@ -117,11 +121,15 @@ impl Bot for BeamSearchBot {
                     next.push((first_acts.clone(), ns, score));
                 }
             }
+            // If nothing was expanded (timed out on very first state), keep result from
+            // the previous depth and stop — beam is already empty from mem::take.
+            if next.is_empty() { break; }
             next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
             next.truncate(self.beam_width);
+            result = next[0].0.clone();
             beam = next;
         }
 
-        beam.into_iter().next().map(|(a, _, _)| a).unwrap_or_default()
+        result
     }
 }

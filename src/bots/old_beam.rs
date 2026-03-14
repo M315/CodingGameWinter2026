@@ -173,6 +173,10 @@ impl Bot for OldBeamSearchBot {
         beam.sort_unstable_by(|a, b| b.2.cmp(&a.2));
         beam.truncate(self.beam_width);
 
+        let mut result: HashMap<u8, Dir> = beam.first()
+            .map(|(a, _, _)| a.clone())
+            .unwrap_or_default();
+
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
 
@@ -187,8 +191,7 @@ impl Bot for OldBeamSearchBot {
                 }
                 let my_combos = gen_action_combos(&cur, player);
                 let opp_acts  = old_greedy_actions(&cur, 1 - player);
-                let cap = self.beam_width.min(my_combos.len());
-                for combo in my_combos.into_iter().take(cap) {
+                for combo in my_combos {
                     let mut combined = combo;
                     for (&k, &v) in &opp_acts { combined.entry(k).or_insert(v); }
                     let mut ns = cur.clone();
@@ -197,11 +200,13 @@ impl Bot for OldBeamSearchBot {
                     next.push((first_acts.clone(), ns, score));
                 }
             }
+            if next.is_empty() { break; }
             next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
             next.truncate(self.beam_width);
+            result = next[0].0.clone();
             beam = next;
         }
 
-        beam.into_iter().next().map(|(a, _, _)| a).unwrap_or_default()
+        result
     }
 }
