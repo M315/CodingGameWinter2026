@@ -89,5 +89,5 @@ fn format_actions(actions: &HashMap<u8, Dir>) -> String {
         .map(|(&id, &dir)| format!("{} {}", id, dir.to_str()))
         .collect();
     parts.sort(); // deterministic output
-    parts.join("; ")
+    parts.join(";")
 }

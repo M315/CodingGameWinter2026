@@ -160,3 +160,97 @@ BFS when all food is near the floor.
   Could be eliminated with thread-local scratch buffers.
 - `HashMap<u8, Dir>` for action combos in beam search (minor — not in top-10).
 - `GameState::clone()` inside beam search — the dominant remaining cost.
+
+---
+
+## 2026-03-14 — OOB panic fix + style preference
+
+### Bug fixed
+- **`apply_gravity` OOB panic** (seen in battle.log: `len=264, index=266`):
+  In the grounding check, `below_y >= self.height` guarded the y-axis but
+  `p.x` was never checked against `[0, self.width)`. Added early return `false`
+  when `p.x < 0 || p.x >= self.width` before computing `below_ci`.
+
+### Style preference recorded
+- User prefers **iterator chains** over `for` loops for equivalent logic.
+  Reasons: bounds-check elimination, better LLVM vectorisation hints, more
+  idiomatic Rust. Exception: indexed `for` is fine when the index is genuinely
+  needed (e.g., O(n²) pairwise loops). Documented in `CLAUDE.md`.
+
+### Next optimization investigation
+Three directions identified for further speedup:
+1. **Minimize `GameState::clone()`** — dominant remaining cost; see open questions.
+2. **Turn-0 precomputation + subtree reuse** — carry beam tree across turns.
+3. **Transposition table** — cache heuristic scores for repeated board states.
+
+### Open questions / next steps
+- [ ] `Arc<grid>` — platforms never change; sharing the grid allocation across
+      beam clones would cut clone size proportionally.
+- [ ] Reversible `step()` / undo-redo — eliminates clones in inner loop entirely
+      (most impactful but complex).
+- [ ] Subtree reuse: store beam tree between turns, on turn N+1 find the branch
+      that matches actual game outcome and resume from it.
+- [ ] Transposition table: Zobrist hash of `GameState` → cached (depth, score).
+
+---
+
+## 2026-03-15 — Clone cost reduction + beam correctness fixes
+
+### What was built
+- **`Arc<Vec<bool>>` for grid** — platforms never change after construction;
+  all beam-search clones share the allocation via refcount bump. Zero memcpy,
+  zero alloc for the grid on every clone.
+- **`food: Vec<bool>` + `food_count: u32`** — replaced `HashSet<Pos>` power set.
+  Clone is memcpy(~264B) instead of rehash+alloc. Direct index lookup throughout.
+  `add_food()` / `clear_food()` replace `insert` / `clear`. `food_count` keeps
+  `is_over()` O(1).
+- **`&state.food` in hot paths** — eliminated `power_grid()` allocation in
+  `heuristic()`, `old_heuristic()`, `greedy_actions()`, and `apply_gravity()`.
+  ~1000+ Vec allocations per turn gone from beam inner loop.
+- **Inner-loop time check** — was only checked at horizon boundaries; one depth
+  expansion (50 states × 27 combos = 1350 ops) could blow 10ms budget entirely.
+  Added `if t0.elapsed() >= limit { break; }` inside the per-state loop. Safe
+  because beam is sorted best-first — breaking discards only the lowest-scoring tail.
+
+### Benchmark results
+| Version | Wall time (20g, beam vs greedy, --time-limit 10) |
+|---|---|
+| Before clone refactor | 18 380ms |
+| After Arc+flat food   |  8 308ms (2.2× speedup) |
+
+### Bugs fixed
+1. **`gen_action_combos` U-turn filter** — was filtering `s.dir.opposite()` but
+   `s.dir` goes stale after a head-destruction+pop. A snake like `[(4,5),(4,6)]`
+   with `s.dir=Right` (from before the pop) would allow `Down` → `(4,6)` = neck.
+   Fix: check proposed cell against `body[1]` (the actual neck) instead.
+
+2. **`mem::take` empty-action bug** — when the inner time check fired before
+   expanding any state, `next` was empty → `beam = []` → `unwrap_or_default()`
+   returned `{}` → `"WAIT"` → snake continued into walls / past food.
+   Fix: initialise `result` from depth-0 best action; update each completed depth;
+   `if next.is_empty() { break; }` preserves the previous depth's result.
+
+3. **`cap` limit on combos per state removed** — was capping combos to
+   `beam_width` per parent, which could silently drop food-eating combos when
+   combo count > beam_width. Removed: beam truncation after scoring is the
+   correct place to enforce width.
+
+### Lessons
+- **`mem::take` in loop bodies is dangerous** — if you take a vec and the loop
+  breaks early before producing output, you've destroyed your previous state with
+  nothing to show for it. Always save a fallback before taking, or guard with
+  `if next.is_empty() { break; }`.
+- **`s.dir` is not reliable for U-turn detection** after head-destruction — always
+  use `body[1]` (neck position) as the source of truth.
+- **Time budget must be enforced inside inner loops**, not just at outer depth
+  boundaries, when each individual expansion can exceed the total budget.
+- **`power_grid()`** was an allocation hotspot inside the beam inner loop — now
+  that `food` IS the flat grid, callers pass `&state.food` directly.
+
+### Open questions / next steps
+- [ ] Reversible `step()` / undo-redo — eliminates clones in inner loop; hardest
+      remaining optimization, highest ceiling.
+- [ ] Subtree reuse: carry beam tree between turns, resume from matching branch.
+- [ ] Transposition table: Zobrist hash → cached (depth, score).
+- [ ] Improve heuristic for flat maps: gravity-aware BFS is too conservative when
+      snake body itself provides support (known limitation from 2026-03-14).

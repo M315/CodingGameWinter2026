@@ -112,6 +112,16 @@ self.snakes.retain(|s| s.body.iter().all(|&p| p.in_bounds(w, h)));
 - `smallvec` / `arrayvec` for collections that are almost always small (e.g. snake list ≤8 items)
 - `sort_unstable()` over `sort()` — stable sort is rarely needed here
 
+### Style: prefer iterators over for loops
+Prefer iterator chains (`.iter()`, `.map()`, `.filter()`, `.for_each()`, `.sum()`, etc.)
+over indexed `for` loops whenever the logic is equivalent. Reasons:
+- Eliminates bounds checks that indexed loops can retain
+- Easier for LLVM to auto-vectorise
+- More idiomatic, composable Rust
+Only fall back to an indexed `for` when you genuinely need the index for
+non-iterator logic (e.g. `O(n²)` pairwise loops, or in-place mutation that
+requires two indices simultaneously).
+
 ### General
 - `#[inline]` on hot path methods (`Pos::in_bounds`, `Dir::delta`, `GameState::is_platform`)
 - Iterative over recursive — no risk of stack overflow, easier to bound
