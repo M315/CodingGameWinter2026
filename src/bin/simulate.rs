@@ -20,11 +20,12 @@ use std::time::Instant;
 
 fn make_bot(name: &str) -> Box<dyn Bot> {
     match name {
-        "wait"   => Box::new(WaitBot),
-        "greedy" => Box::new(GreedyBot),
-        "beam"   => Box::new(BeamSearchBot::new(120, 8, 40)),
+        "wait"     => Box::new(WaitBot),
+        "greedy"   => Box::new(GreedyBot),
+        "beam"     => Box::new(BeamSearchBot::new(120, 8, 40)),
+        "old_beam" => Box::new(OldBeamSearchBot::new(120, 8, 40)),
         _ => {
-            eprintln!("Unknown bot '{}'. Available: wait | greedy | beam", name);
+            eprintln!("Unknown bot '{}'. Available: wait | greedy | beam | old_beam", name);
             std::process::exit(1);
         }
     }

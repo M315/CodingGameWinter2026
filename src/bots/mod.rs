@@ -5,6 +5,7 @@ pub use crate::game::*;
 pub mod wait;
 pub mod greedy;
 pub mod beam;
+pub mod old_beam;
 
 // ============================================================
 // Bot trait
@@ -33,46 +34,6 @@ pub fn greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
         }
     }
     actions
-}
-
-/// Heuristic score for `player` in `state`. Higher = better for player.
-pub fn heuristic(state: &GameState, player: u8) -> i32 {
-    if !state.snakes_alive(player) { return i32::MIN / 2; }
-
-    let my  = state.score(player) as i32;
-    let opp = state.score(1 - player) as i32;
-
-    let obs = state.build_obstacles();
-
-    // Gravity-aware food distance: only count paths along grounded cells.
-    let food_bonus: i32 = state.snakes.iter()
-        .filter(|s| s.player == player)
-        .map(|s| {
-            let d = state.bfs_dist_grounded(s.head(), &state.power, &obs);
-            if d == i32::MAX { -50 } else { 20 - d.min(20) }
-        })
-        .sum();
-
-    // Stability: penalise snakes that are currently unsupported (will fall next turn).
-    // Uses the same grounding logic as apply_gravity().
-    let occupied: std::collections::HashSet<_> = state.snakes.iter()
-        .flat_map(|s| s.body.iter().copied()).collect();
-    let stability: i32 = state.snakes.iter()
-        .filter(|s| s.player == player)
-        .map(|s| {
-            let own: std::collections::HashSet<_> = s.body.iter().copied().collect();
-            let grounded = s.body.iter().any(|&p| {
-                let below = p.translate(0, 1);
-                p.y + 1 >= state.height
-                    || state.is_platform(below)
-                    || state.power.contains(&below)
-                    || (occupied.contains(&below) && !own.contains(&below))
-            });
-            if grounded { 0 } else { -120 }
-        })
-        .sum();
-
-    my * 100 - opp * 80 + food_bonus + stability
 }
 
 /// All valid direction combos for `player`'s snakes (U-turns pruned).
