@@ -41,7 +41,52 @@ Format: `## YYYY-MM-DD — <topic>`
       account for opponent blocking or food competition
 - [ ] Minimax/adversarial search: beam search assumes greedy opponent which may
       be exploitable at higher league tiers
-- [ ] Test maps with multiple snakes per player (the game allows 1–4 per player)
+- [x] Test maps with multiple snakes per player → done via exotec_arena map
 - [ ] Verify `step()` correctness against the official game replays once we have
       CG submission results
 - [ ] Consider Alpha-Beta or MCTS for deeper search without exponential blowup
+
+---
+
+## 2026-03-14 — Gravity-aware heuristic + Exotec Arena map
+
+### What was built
+- **`maps/exotec_arena.txt`**: realistic 21×11 map reconstructed from gameplay
+  screenshots. Left/right pillars (x=1-2 and x=17-18, y=4-9), two center shelves
+  (x=5-7 and x=13-15, y=8-9). 3 snakes per player, 10 food items spread at
+  multiple heights. Validated against known open coordinates from screenshot tooltips:
+  (3,7), (4,8), (9,5), (16,9), (0,10), (2,10), (3,10).
+- **Gravity-aware BFS** (`game.rs`): `is_grounded_cell()`, `bfs_dist_grounded()`,
+  `bfs_first_step_grounded()` — intermediate cells must be supported from below
+  (platform, power source, or bottom edge). Targets (food) are always reachable.
+- **Updated heuristic** (`bots/mod.rs`):
+  - `food_bonus` now uses `bfs_dist_grounded` — stops treating mid-air shortcuts
+    as valid routes. Unreachable penalty raised from -30 → -50.
+  - Added `stability` term: -120 per player snake that is currently unsupported
+    (same logic as `apply_gravity`). Rewards grounded positions, punishes floating.
+- **Updated `greedy_actions`**: switched to `bfs_first_step_grounded` so the
+  opponent model also avoids planning through open air.
+
+### What worked
+- **Beam vs Greedy** (exotec arena, 10 games): 100% win rate ✓
+- **Beam vs Beam** (exotec arena, 10 games): 50/50 — correct on symmetric map ✓
+- **Beam vs Greedy** (default map, 20 games): 100% win rate maintained ✓
+- **Bundle compiles**: `python scripts/bundle.py | rustc --edition 2021` → OK ✓
+- **Greedy vs Greedy** (both maps): 100% draws — expected, symmetric+deterministic
+
+### What didn't work / gotchas
+- **Timing on 3-snake maps**: local simulation hits ~80-120ms/turn (3 snakes per
+  player → 27 combos vs 3 with 1 snake). CG server runs 3-5× faster — screenshots
+  confirm 8-28ms on CG for the same map. Not a real issue for submission.
+- **Gravity-aware BFS is conservative**: it can't model the snake's OWN body
+  providing support while the head extends into the air. A long snake can legally
+  be in positions the BFS considers unreachable. Over-penalises some valid food
+  paths. Acceptable approximation for now — beam search corrects via simulation.
+
+### Open questions / next steps
+- [ ] Beam width scaling for multi-snake games: 3 snakes → 27 combos, 4 snakes → 81.
+      Consider capping combos per snake or reducing beam width dynamically.
+- [ ] Snake-body-aware gravity BFS: let a snake's own body count as support for
+      higher cells when planning (improves accuracy of food distance estimate).
+- [ ] Food competition heuristic: penalise food that the opponent can reach faster.
+- [ ] Opponent blocking: reward moves that cut off opponent paths to food.

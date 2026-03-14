@@ -1,0 +1,56 @@
+// SNAKEBYTE – "Exotec Arena"
+// Reconstructed from gameplay screenshots (Winter 2026 challenge).
+// Width=21, Height=11.  y=0=top, y=10=bottom (gravity floor, no border walls).
+//
+// Platform structures:
+//   Left pillar      x=1-2,   y=4-9
+//   Left shelf       x=5-7,   y=8-9
+//   Right shelf      x=13-15, y=8-9  (symmetric to left)
+//   Right pillar     x=17-18, y=4-9  (symmetric to left)
+//
+// Validation against known open coords from screenshots:
+//   (3,7)  open ✓   (4,8)  open ✓   (9,5)  open ✓
+//   (16,9) open ✓   (0,10) open ✓   (2,10) open ✓   (3,10) open ✓
+
+.....................
+.....................
+.....................
+.....................
+.##...............##.
+.##...............##.
+.##...............##.
+.##...............##.
+.##..###.....###.##..
+.##..###.....###.##..
+.....................
+
+// Food – 10 items spread across heights (high food rewards elevation)
+P 1  1
+P 5  1
+P 10 1
+P 15 1
+P 19 1
+P 3  4
+P 16 4
+P 9  6
+P 5  7
+P 15 7
+
+// Snakes: 3 per player, 3 parts, head listed first.
+// After apply_gravity():
+//   Snake 0: rests at (2,1)-(2,2)-(2,3)  [tail grounded by left pillar top at y=4]
+//   Snake 1: rests at (6,5)-(6,6)-(6,7)  [tail grounded by left shelf top at y=8]
+//   Snake 2: falls to (0,8)-(0,9)-(0,10) [no platform in col 0 → bottom edge]
+//   Snake 3: rests at (18,1)-(18,2)-(18,3) [mirror of snake 0]
+//   Snake 4: rests at (14,5)-(14,6)-(14,7) [mirror of snake 1]
+//   Snake 5: falls to (20,8)-(20,9)-(20,10) [mirror of snake 2]
+
+// Player 0 (pink / PetyFloyd side)
+S 0 0   2,1  2,2  2,3
+S 0 1   6,5  6,6  6,7
+S 0 2   0,0  0,1  0,2
+
+// Player 1 (green / m315 side)
+S 1 3   18,1  18,2  18,3
+S 1 4   14,5  14,6  14,7
+S 1 5   20,0  20,1  20,2
