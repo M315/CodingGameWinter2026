@@ -6,8 +6,13 @@
 ///   cargo run --bin simulate -- --p0 greedy --p1 greedy --bench 20 --quiet
 ///   cargo run --bin simulate -- --p0 beam --p1 beam --bench 5
 ///   cargo run --bin simulate -- --map path/to/map.txt
+///   cargo run --bin simulate -- --p0 beam --p1 old_beam --bench 50 --time-limit 10
 ///
-/// Available bots: wait | greedy | beam
+/// Available bots: wait | greedy | beam | old_beam
+///
+/// --time-limit <ms>  Per-turn budget for all beam bots (default: 40).
+///                    Lower values make benchmarks faster while preserving
+///                    relative win rates. Disables the 950ms first-turn bonus.
 
 use snakebyte::*;
 use std::collections::HashMap;
@@ -18,12 +23,12 @@ use std::time::Instant;
 // Bot factory
 // ============================================================
 
-fn make_bot(name: &str) -> Box<dyn Bot> {
+fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
     match name {
         "wait"     => Box::new(WaitBot),
         "greedy"   => Box::new(GreedyBot),
-        "beam"     => Box::new(BeamSearchBot::new(120, 8, 40)),
-        "old_beam" => Box::new(OldBeamSearchBot::new(120, 8, 40)),
+        "beam"     => Box::new(BeamSearchBot::new(120, 8, time_limit_ms)),
+        "old_beam" => Box::new(OldBeamSearchBot::new(120, 8, time_limit_ms)),
         _ => {
             eprintln!("Unknown bot '{}'. Available: wait | greedy | beam | old_beam", name);
             std::process::exit(1);
@@ -39,10 +44,11 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let arg = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str());
 
-    let p0_name = arg("--p0").unwrap_or("beam");
-    let p1_name = arg("--p1").unwrap_or("greedy");
-    let bench   = arg("--bench").and_then(|s| s.parse().ok()).unwrap_or(1usize);
-    let quiet   = args.contains(&"--quiet".to_string()) || bench > 1;
+    let p0_name      = arg("--p0").unwrap_or("beam");
+    let p1_name      = arg("--p1").unwrap_or("greedy");
+    let bench        = arg("--bench").and_then(|s| s.parse().ok()).unwrap_or(1usize);
+    let quiet        = args.contains(&"--quiet".to_string()) || bench > 1;
+    let time_limit   = arg("--time-limit").and_then(|s| s.parse().ok()).unwrap_or(40u64);
     let map_str = match arg("--map") {
         Some(path) => std::fs::read_to_string(path).expect("Cannot read map file"),
         None       => default_map().to_string(),
@@ -55,7 +61,10 @@ fn main() {
 
     for game_n in 0..bench {
         let mut state = build_state_from_map(&map_str);
-        let mut bots: [Box<dyn Bot>; 2] = [make_bot(p0_name), make_bot(p1_name)];
+        // Skip the 950ms first-turn bonus during multi-game benchmarks —
+        // it distorts timings without affecting relative win rates.
+        if bench > 1 { state.turn = 1; }
+        let mut bots: [Box<dyn Bot>; 2] = [make_bot(p0_name, time_limit), make_bot(p1_name, time_limit)];
 
         if !quiet {
             eprintln!("=== Game {} | P0={} vs P1={} ===", game_n + 1, p0_name, p1_name);
