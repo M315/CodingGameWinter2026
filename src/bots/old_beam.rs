@@ -176,8 +176,10 @@ impl Bot for OldBeamSearchBot {
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
 
-            let mut next: Vec<BeamItem> = Vec::with_capacity(beam.len() * 9);
-            for (first_acts, cur, _) in beam.drain(..) {
+            let cur_beam = std::mem::take(&mut beam);
+            let mut next: Vec<BeamItem> = Vec::with_capacity(cur_beam.len() * 9);
+            for (first_acts, cur, _) in cur_beam {
+                if t0.elapsed() >= limit { break; }
                 if cur.is_over() {
                     let score = old_heuristic(&cur, player);
                     next.push((first_acts, cur, score));

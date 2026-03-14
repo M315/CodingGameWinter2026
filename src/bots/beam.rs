@@ -91,8 +91,15 @@ impl Bot for BeamSearchBot {
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
 
-            let mut next: Vec<BeamItem> = Vec::with_capacity(beam.len() * 9);
-            for (first_acts, cur, _) in beam.drain(..) {
+            // mem::take so we own the vec and can break early without drain issues.
+            // beam is already sorted best-first, so breaking early keeps the best work.
+            let cur_beam = std::mem::take(&mut beam);
+            let mut next: Vec<BeamItem> = Vec::with_capacity(cur_beam.len() * 9);
+            for (first_acts, cur, _) in cur_beam {
+                // Inner time check: stop expanding once budget is exhausted.
+                // Safe to break here because cur_beam is sorted best-first —
+                // remaining states are lower-scoring than what we've already expanded.
+                if t0.elapsed() >= limit { break; }
                 if cur.is_over() {
                     let score = heuristic(&cur, player);
                     next.push((first_acts, cur, score));

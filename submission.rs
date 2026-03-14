@@ -831,6 +831,10 @@ pub fn greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
 }
 
 /// All valid direction combos for `player`'s snakes (U-turns pruned).
+///
+/// U-turn check uses the neck position (body[1]) rather than s.dir.opposite()
+/// — s.dir can become stale after a head-destruction+pop in a previous step,
+/// causing the wrong direction to be filtered.
 pub fn gen_action_combos(state: &GameState, player: u8) -> Vec<HashMap<u8, Dir>> {
     let ids: Vec<u8> = state.snakes.iter()
         .filter(|s| s.player == player).map(|s| s.id).collect();
@@ -840,8 +844,16 @@ pub fn gen_action_combos(state: &GameState, player: u8) -> Vec<HashMap<u8, Dir>>
     let mut combos: Vec<HashMap<u8, Dir>> = vec![HashMap::new()];
     for id in ids {
         let s = state.snakes.iter().find(|s| s.id == id).unwrap();
+        // Neck position: the cell the snake cannot re-enter this turn.
+        // Only defined for snakes with 2+ segments; 1-segment snakes can go anywhere.
+        let neck = (s.len() >= 2).then(|| s.body[1]);
         let dirs: Vec<Dir> = Dir::all().iter()
-            .filter(|&&d| d != s.dir.opposite()).copied().collect();
+            .filter(|&&d| {
+                let (dx, dy) = d.delta();
+                Some(s.head().translate(dx, dy)) != neck
+            })
+            .copied()
+            .collect();
         let mut next = Vec::with_capacity(combos.len() * dirs.len());
         for existing in &combos {
             for &d in &dirs {
@@ -1027,8 +1039,10 @@ impl Bot for OldBeamSearchBot {
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
 
-            let mut next: Vec<BeamItem> = Vec::with_capacity(beam.len() * 9);
-            for (first_acts, cur, _) in beam.drain(..) {
+            let cur_beam = std::mem::take(&mut beam);
+            let mut next: Vec<BeamItem> = Vec::with_capacity(cur_beam.len() * 9);
+            for (first_acts, cur, _) in cur_beam {
+                if t0.elapsed() >= limit { break; }
                 if cur.is_over() {
                     let score = old_heuristic(&cur, player);
                     next.push((first_acts, cur, score));
@@ -1143,5 +1157,5 @@ fn format_actions(actions: &HashMap<u8, Dir>) -> String {
         .map(|(&id, &dir)| format!("{} {}", id, dir.to_str()))
         .collect();
     parts.sort(); // deterministic output
-    parts.join("; ")
+    parts.join(";")
 }
