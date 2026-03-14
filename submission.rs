@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables)]
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use std::io::{self, BufRead};
@@ -142,7 +143,7 @@ impl GameState {
 
         // Phase 3 – eaters: head lands on a power source
         let eaters: HashSet<usize> = proposed.iter().enumerate()
-            .filter(|(_, h)| self.power.contains(h))
+            .filter(|(_, &h)| self.power.contains(&h))
             .map(|(i, _)| i)
             .collect();
 
@@ -286,6 +287,68 @@ impl GameState {
         }
         i32::MAX
     }
+
+    /// Returns true if position `p` is supported from below (platform, power source,
+    /// or bottom edge). Does not check snake bodies — use for static support checks.
+    #[inline]
+    pub fn is_grounded_cell(&self, p: Pos) -> bool {
+        let below = p.translate(0, 1);
+        p.y + 1 >= self.height
+            || self.is_platform(below)
+            || self.power.contains(&below)
+    }
+
+    /// Gravity-aware BFS distance: intermediate cells must be grounded (supported
+    /// from below by platform/power/bottom-edge). Targets (food) are always reachable
+    /// regardless of support — the snake body provides support en-route in practice,
+    /// but this approximation correctly penalises paths through open air.
+    pub fn bfs_dist_grounded(&self, start: Pos, targets: &HashSet<Pos>, obs: &HashSet<Pos>) -> i32 {
+        if targets.is_empty() { return i32::MAX; }
+        if targets.contains(&start) { return 0; }
+        let mut dist: HashMap<Pos, i32> = HashMap::new();
+        let mut q: VecDeque<Pos> = VecDeque::new();
+        dist.insert(start, 0); q.push_back(start);
+        while let Some(pos) = q.pop_front() {
+            let d = dist[&pos];
+            for dir in Dir::all() {
+                let (dx, dy) = dir.delta();
+                let n = pos.translate(dx, dy);
+                if !n.in_bounds(self.width, self.height) || self.is_platform(n) || obs.contains(&n) || dist.contains_key(&n) { continue; }
+                // Allow targets (food) through; require intermediate cells to be grounded.
+                if !targets.contains(&n) && !self.is_grounded_cell(n) { continue; }
+                if targets.contains(&n) { return d + 1; }
+                dist.insert(n, d + 1); q.push_back(n);
+            }
+        }
+        i32::MAX
+    }
+
+    /// Gravity-aware first-step BFS: returns direction toward nearest reachable
+    /// grounded target, or None. Same grounding restriction as bfs_dist_grounded.
+    pub fn bfs_first_step_grounded(&self, start: Pos, targets: &HashSet<Pos>, obs: &HashSet<Pos>) -> Option<Dir> {
+        if targets.is_empty() { return None; }
+        let mut first: HashMap<Pos, Dir> = HashMap::new();
+        let mut q: VecDeque<Pos> = VecDeque::new();
+        // First step: allow any reachable neighbour (snake body still provides support here)
+        for d in Dir::all() {
+            let (dx, dy) = d.delta();
+            let n = start.translate(dx, dy);
+            if !n.in_bounds(self.width, self.height) || self.is_platform(n) || obs.contains(&n) || first.contains_key(&n) { continue; }
+            first.insert(n, d); q.push_back(n);
+        }
+        while let Some(pos) = q.pop_front() {
+            if targets.contains(&pos) { return Some(first[&pos]); }
+            let fd = first[&pos];
+            for d in Dir::all() {
+                let (dx, dy) = d.delta();
+                let n = pos.translate(dx, dy);
+                if !n.in_bounds(self.width, self.height) || self.is_platform(n) || obs.contains(&n) || first.contains_key(&n) { continue; }
+                if !targets.contains(&n) && !self.is_grounded_cell(n) { continue; }
+                first.insert(n, fd); q.push_back(n);
+            }
+        }
+        None
+    }
 }
 
 // ============================================================
@@ -341,12 +404,13 @@ pub trait Bot {
 // ============================================================
 
 /// Greedy action selection: BFS each snake toward the nearest power source.
+/// Uses gravity-aware BFS so paths through open air are not considered.
 /// Standalone function so BeamSearchBot can call it without trait overhead.
 pub fn greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
     let obs = state.build_obstacles();
     let mut actions = HashMap::new();
     for s in state.snakes.iter().filter(|s| s.player == player) {
-        if let Some(d) = state.bfs_first_step(s.head(), &state.power, &obs) {
+        if let Some(d) = state.bfs_first_step_grounded(s.head(), &state.power, &obs) {
             actions.insert(s.id, d);
         }
     }
@@ -361,15 +425,36 @@ pub fn heuristic(state: &GameState, player: u8) -> i32 {
     let opp = state.score(1 - player) as i32;
 
     let obs = state.build_obstacles();
+
+    // Gravity-aware food distance: only count paths along grounded cells.
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
-            let d = state.bfs_dist(s.head(), &state.power, &obs);
-            if d == i32::MAX { -30 } else { 20 - d.min(20) }
+            let d = state.bfs_dist_grounded(s.head(), &state.power, &obs);
+            if d == i32::MAX { -50 } else { 20 - d.min(20) }
         })
         .sum();
 
-    my * 100 - opp * 80 + food_bonus
+    // Stability: penalise snakes that are currently unsupported (will fall next turn).
+    // Uses the same grounding logic as apply_gravity().
+    let occupied: std::collections::HashSet<_> = state.snakes.iter()
+        .flat_map(|s| s.body.iter().copied()).collect();
+    let stability: i32 = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|s| {
+            let own: std::collections::HashSet<_> = s.body.iter().copied().collect();
+            let grounded = s.body.iter().any(|&p| {
+                let below = p.translate(0, 1);
+                p.y + 1 >= state.height
+                    || state.is_platform(below)
+                    || state.power.contains(&below)
+                    || (occupied.contains(&below) && !own.contains(&below))
+            });
+            if grounded { 0 } else { -120 }
+        })
+        .sum();
+
+    my * 100 - opp * 80 + food_bonus + stability
 }
 
 /// All valid direction combos for `player`'s snakes (U-turns pruned).
@@ -508,7 +593,7 @@ fn main() {
     let my_id_set: std::collections::HashSet<u8> = my_ids.iter().cloned().collect();
 
     let mut state = GameState::new(width, height, grid);
-    let mut bot: Box<dyn Bot> = Box::new(BeamSearchBot::new(120, 8, 2));
+    let mut bot: Box<dyn Bot> = Box::new(BeamSearchBot::new(120, 8, 40));
 
     // ── Game loop ────────────────────────────────────────────────────
     loop {
@@ -554,5 +639,5 @@ fn format_actions(actions: &HashMap<u8, Dir>) -> String {
         .map(|(&id, &dir)| format!("{} {}", id, dir.to_str()))
         .collect();
     parts.sort(); // deterministic output
-    parts.join(";")
+    parts.join("; ")
 }
