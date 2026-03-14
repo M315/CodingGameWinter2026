@@ -55,6 +55,8 @@ def bundle(bot: str = "beam", all_bots: bool = False) -> str:
             sources.append(SRC / "bots" / "greedy.rs")
         elif bot == "wait":
             sources.append(SRC / "bots" / "wait.rs")
+        elif bot == "old_beam":
+            sources.append(SRC / "bots" / "old_beam.rs")
         else:  # beam (default)
             sources.append(SRC / "bots" / "beam.rs")
 
@@ -80,7 +82,7 @@ def bundle(bot: str = "beam", all_bots: bool = False) -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bundle Rust source for CG submission")
     parser.add_argument("--out",      default=str(ROOT / "submission.rs"), help="Output path")
-    parser.add_argument("--bot",      default="beam", choices=["wait", "greedy", "beam"])
+    parser.add_argument("--bot",      default="beam", choices=["wait", "greedy", "beam", "old_beam"])
     parser.add_argument("--all-bots", action="store_true", help="Include all bot implementations")
     args = parser.parse_args()
 

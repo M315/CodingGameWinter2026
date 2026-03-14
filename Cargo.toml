@@ -19,3 +19,4 @@ path = "src/bin/simulate.rs"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+debug = 1

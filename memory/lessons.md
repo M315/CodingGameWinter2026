@@ -90,3 +90,73 @@ Format: `## YYYY-MM-DD — <topic>`
       higher cells when planning (improves accuracy of food distance estimate).
 - [ ] Food competition heuristic: penalise food that the opponent can reach faster.
 - [ ] Opponent blocking: reward moves that cut off opponent paths to food.
+- [ ] Gravity heuristic hurts on flat maps (see 2026-03-14 session note below).
+
+---
+
+## 2026-03-14 — Performance optimisation (flat arrays, eliminate hashing)
+
+### What was profiled
+- Callgrind (valgrind) on 1 game, beam vs greedy.
+- 3.7 billion instructions total.
+
+### Top bottlenecks found
+1. **SipHash on `Pos` keys — 37% of all instructions**: every `HashSet<Pos>` /
+   `HashMap<Pos, *>` operation in BFS, `apply_gravity`, and `heuristic` was
+   hashing a 32-bit pair using a cryptographic hash. Completely unnecessary.
+2. **`apply_gravity` — 8%**: rebuilt two `HashSet<Pos>` (occupied + own) inside
+   the fixpoint loop on every call. Called after every `step()` in beam search
+   (~2880 times/turn at width=120, horizon=8).
+3. **Heap allocations — 9%**: direct consequence of #1+#2. malloc/free dominated
+   by HashSet/HashMap construction in hot paths.
+4. **`build_obstacles` called twice**: once inside `heuristic()` AND once inside
+   `greedy_actions()` for the same state — now eliminated by passing precomputed
+   grids.
+
+### What was changed (`game.rs`)
+- **All 4 BFS functions**: signatures changed from `&HashSet<Pos>` to `&[bool]`
+  (flat grid). Internals: `HashMap<Pos, Dir/i32>` → `Vec<u8>/Vec<i32>` visited
+  array; `VecDeque<Pos>` → `VecDeque<usize>` (cell index queue). Zero hashing.
+- **`build_obstacles()`**: returns `Vec<bool>` instead of `HashSet<Pos>`.
+- **Added `power_grid()`**: flat `Vec<bool>` for power source positions.
+- **Added `snake_grid()`**: flat `Vec<u8>` mapping cell → snake index.
+- **`apply_gravity()`**: pre-allocates `snake_at: Vec<u8>` outside the fixpoint
+  loop; `.fill(u8::MAX)` clears it each iteration. Zero HashSet allocations.
+- **`step()`**: `eaters: HashSet<usize>` → `[bool; 32]`; `body_cells: HashSet<Pos>`
+  → `Vec<bool>` flat grid; `head_map: HashMap<Pos, Vec<usize>>` → O(n²) loop
+  (n ≤ 8, so O(64) max — cheaper than any HashMap).
+- **`is_grounded_cell_ci()`**: new private helper using flat index arithmetic,
+  used by grounded BFS variants.
+
+### What was changed (`bots/`)
+- `greedy_actions()`: calls `power_grid()` once, passes `&pow` to BFS.
+- `heuristic()`: calls `build_obstacles()` + `power_grid()` + `snake_grid()`
+  once each. Stability check uses flat `sng` grid — no `HashSet` for `occupied`
+  or `own`.
+- `BeamSearchBot` / `OldBeamSearchBot`: turn 0 now uses 950 ms budget (full CG
+  initialisation window) instead of 40 ms.
+
+### Benchmark results (default map, beam vs greedy, 20 games)
+| Version | Wall time | Win rate |
+|---|---|---|
+| Before optimisation | 142 600 ms | 100% |
+| After optimisation  |  10 500 ms | 100% |
+| **Speedup** | **13.5×** | — |
+
+### New vs old beam (heuristic comparison)
+| Map | beam P0 vs old_beam P1 (20g) | beam P0 vs old_beam P1 (exotec, 10g) |
+|---|---|---|
+| Default (flat) | old_beam 100% | — |
+| Exotec Arena   | — | beam 60%, old_beam 20%, draws 20% |
+
+Gravity heuristic helps on the platform map but hurts on the flat map because
+`bfs_dist_grounded` marks elevated food as unreachable when the only path goes
+through air — but the snake body itself provides support (known limitation).
+Next fix: replace grounded BFS with a body-aware version, or fall back to plain
+BFS when all food is near the floor.
+
+### Remaining allocation hotspots (not yet fixed)
+- BFS visited arrays (`Vec<u8>`, `Vec<i32>`) still allocated per BFS call.
+  Could be eliminated with thread-local scratch buffers.
+- `HashMap<u8, Dir>` for action combos in beam search (minor — not in top-10).
+- `GameState::clone()` inside beam search — the dominant remaining cost.

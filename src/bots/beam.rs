@@ -25,31 +25,34 @@ pub fn heuristic(state: &GameState, player: u8) -> i32 {
     let my  = state.score(player) as i32;
     let opp = state.score(1 - player) as i32;
 
-    let obs = state.build_obstacles();
+    // Build flat grids once — no per-snake HashSet allocations
+    let obs = state.build_obstacles(); // Vec<bool>: body obstacles
+    let pow = state.power_grid();      // Vec<bool>: food/power positions
+    let sng = state.snake_grid();      // Vec<u8>:   snake index per cell
 
-    // Gravity-aware food distance: only count paths along grounded cells.
+    let w = state.width as usize;
+
+    // Gravity-aware food distance
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
-            let d = state.bfs_dist_grounded(s.head(), &state.power, &obs);
+            let d = state.bfs_dist_grounded(s.head(), &pow, &obs);
             if d == i32::MAX { -50 } else { 20 - d.min(20) }
         })
         .sum();
 
-    // Stability: penalise snakes that are currently unsupported (will fall next turn).
-    // Uses the same grounding logic as apply_gravity().
-    let occupied: std::collections::HashSet<_> = state.snakes.iter()
-        .flat_map(|s| s.body.iter().copied()).collect();
-    let stability: i32 = state.snakes.iter()
-        .filter(|s| s.player == player)
-        .map(|s| {
-            let own: std::collections::HashSet<_> = s.body.iter().copied().collect();
+    // Stability: penalise snakes not grounded — no HashSet, uses flat sng+pow grids
+    let stability: i32 = state.snakes.iter().enumerate()
+        .filter(|(_, s)| s.player == player)
+        .map(|(snake_idx, s)| {
             let grounded = s.body.iter().any(|&p| {
-                let below = p.translate(0, 1);
-                p.y + 1 >= state.height
-                    || state.is_platform(below)
-                    || state.power.contains(&below)
-                    || (occupied.contains(&below) && !own.contains(&below))
+                let below_y = p.y + 1;
+                if below_y >= state.height { return true; }
+                let below_ci = below_y as usize * w + p.x as usize;
+                if state.grid[below_ci] { return true; }
+                if pow[below_ci] { return true; }
+                let sat = sng[below_ci];
+                sat != u8::MAX && sat as usize != snake_idx
             });
             if grounded { 0 } else { -120 }
         })
@@ -62,6 +65,12 @@ impl Bot for BeamSearchBot {
     fn name(&self) -> &str { "BeamSearchBot" }
 
     fn choose_actions(&mut self, state: &GameState, player: u8) -> HashMap<u8, Dir> {
+        // Turn 0 gets the full 1s initialisation budget; subsequent turns use time_limit.
+        let limit = if state.turn == 0 {
+            Duration::from_millis(950)
+        } else {
+            self.time_limit
+        };
         let t0 = Instant::now();
         type BeamItem = (HashMap<u8, Dir>, GameState, i32);
 
@@ -81,7 +90,7 @@ impl Bot for BeamSearchBot {
         beam.truncate(self.beam_width);
 
         for _depth in 1..self.horizon {
-            if t0.elapsed() >= self.time_limit { break; }
+            if t0.elapsed() >= limit { break; }
 
             let mut next: Vec<BeamItem> = Vec::with_capacity(beam.len() * 9);
             for (first_acts, cur, _) in beam.drain(..) {
