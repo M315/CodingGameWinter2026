@@ -19,14 +19,14 @@ impl OldBeamSearchBot {
 /// Old greedy: plain BFS (no grounding restriction).
 pub fn old_greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
     let obs = state.build_obstacles();
-    let pow = state.power_grid();
-    let mut actions = HashMap::new();
-    for s in state.snakes.iter().filter(|s| s.player == player) {
-        if let Some(d) = state.bfs_first_step(s.head(), &pow, &obs) {
-            actions.insert(s.id, d);
-        }
-    }
-    actions
+    // state.food IS the power grid — pass directly, no allocation
+    state.snakes.iter()
+        .filter(|s| s.player == player)
+        .filter_map(|s| {
+            state.bfs_first_step(s.head(), &state.food, &obs)
+                .map(|d| (s.id, d))
+        })
+        .collect()
 }
 
 /// Old heuristic: plain BFS food distance, no stability term, -30 unreachable penalty.
@@ -37,12 +37,11 @@ pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
     let opp = state.score(1 - player) as i32;
 
     let obs = state.build_obstacles();
-    let pow = state.power_grid();
-
+    // state.food IS the power grid — pass directly, no allocation
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
-            let d = state.bfs_dist(s.head(), &pow, &obs);
+            let d = state.bfs_dist(s.head(), &state.food, &obs);
             if d == i32::MAX { -30 } else { 20 - d.min(20) }
         })
         .sum();
@@ -70,7 +69,7 @@ mod tests {
         s.snakes.push(Snake::new(1, vec![Pos::new(17, 13), Pos::new(16, 13), Pos::new(15, 13)], 1));
         // A handful of food items
         for &(x, y) in &[(5, 13), (10, 13), (14, 13), (7, 13), (12, 13)] {
-            s.power.insert(Pos::new(x, y));
+            s.add_food(Pos::new(x, y));
         }
         s
     }

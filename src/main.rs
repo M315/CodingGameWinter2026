@@ -47,13 +47,13 @@ fn main() {
     // ── Game loop ────────────────────────────────────────────────────
     loop {
         let power_count: usize = read_line!(lines).trim().parse().unwrap();
-        state.power.clear();
+        state.clear_food();
         for _ in 0..power_count {
             let line = read_line!(lines);
             let mut parts = line.trim().split_whitespace();
             let x: i32 = parts.next().unwrap().parse().unwrap();
             let y: i32 = parts.next().unwrap().parse().unwrap();
-            state.power.insert(Pos::new(x, y));
+            state.add_food(Pos::new(x, y));
         }
 
         let snake_count: usize = read_line!(lines).trim().parse().unwrap();

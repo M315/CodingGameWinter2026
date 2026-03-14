@@ -147,7 +147,7 @@ fn build_state_from_map(map: &str) -> GameState {
         let mut p = line[1..].trim().split_whitespace();
         let x: i32 = p.next().unwrap().parse().unwrap();
         let y: i32 = p.next().unwrap().parse().unwrap();
-        state.power.insert(Pos::new(x, y));
+        state.add_food(Pos::new(x, y));
     }
     for line in &snake_lines {
         let mut p = line[1..].trim().split_whitespace();

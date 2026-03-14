@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::io::{self, BufRead};
 
@@ -86,22 +87,55 @@ pub fn infer_dir(parts: &[Pos]) -> Dir {
 // GameState
 // ============================================================
 
+/// Clone cost breakdown:
+///   grid  — Arc refcount bump only (zero copy, zero alloc)
+///   food  — memcpy of width*height bytes (~264B for a 24×11 map)
+///   snakes — unavoidable: VecDeque bodies per snake
 #[derive(Clone, Debug)]
 pub struct GameState {
     pub width:  i32,
     pub height: i32,
-    /// Flat row-major: grid[y * width + x] = true if platform
-    pub grid:   Vec<bool>,
-    /// Live power sources
-    pub power:  HashSet<Pos>,
+    /// Flat row-major platform grid. Wrapped in Arc — never mutates after
+    /// construction, so all beam-search clones share the same allocation.
+    pub grid: Arc<Vec<bool>>,
+    /// Live food/power sources as a flat bool grid (same dimensions as grid).
+    /// Replaces HashSet<Pos>: lookup is a direct array index, clone is memcpy.
+    pub food: Vec<bool>,
+    /// Number of live food items — keeps is_over() O(1).
+    pub food_count: u32,
     /// All living snakes (both players)
     pub snakes: Vec<Snake>,
-    pub turn:   u32,
+    pub turn: u32,
 }
 
 impl GameState {
     pub fn new(width: i32, height: i32, grid: Vec<bool>) -> Self {
-        GameState { width, height, grid, power: HashSet::new(), snakes: Vec::new(), turn: 0 }
+        let size = (width * height) as usize;
+        GameState {
+            width, height,
+            grid: Arc::new(grid),
+            food: vec![false; size],
+            food_count: 0,
+            snakes: Vec::new(),
+            turn: 0,
+        }
+    }
+
+    /// Insert a food item at `p`. No-op if out of bounds or already present.
+    pub fn add_food(&mut self, p: Pos) {
+        if p.in_bounds(self.width, self.height) {
+            let ci = self.cell_idx(p);
+            if !self.food[ci] {
+                self.food[ci] = true;
+                self.food_count += 1;
+            }
+        }
+    }
+
+    /// Remove all food items.
+    pub fn clear_food(&mut self) {
+        self.food.fill(false);
+        self.food_count = 0;
     }
 
     #[inline]
@@ -125,7 +159,7 @@ impl GameState {
     }
 
     pub fn is_over(&self) -> bool {
-        self.turn >= 200 || self.power.is_empty() || self.snakes.is_empty()
+        self.turn >= 200 || self.food_count == 0 || self.snakes.is_empty()
     }
 
     // --------------------------------------------------------
@@ -137,9 +171,9 @@ impl GameState {
         if n == 0 { self.turn += 1; return; }
 
         // Phase 1 – apply direction overrides
-        for s in &mut self.snakes {
+        self.snakes.iter_mut().for_each(|s| {
             if let Some(&d) = actions.get(&s.id) { s.dir = d; }
-        }
+        });
 
         // Phase 2 – proposed new head positions
         let proposed: Vec<Pos> = self.snakes.iter().map(|s| {
@@ -147,28 +181,30 @@ impl GameState {
             s.head().translate(dx, dy)
         }).collect();
 
-        // Phase 3 – eaters: head lands on a power source (flat bool array, max 32 snakes)
+        // Phase 3 – eaters: head lands on a food cell (flat bool array, max 32 snakes)
+        let w = self.width as usize;
         let mut eaters = [false; 32];
         for (i, &h) in proposed.iter().enumerate() {
-            if self.power.contains(&h) { eaters[i] = true; }
-        }
-
-        // Phase 4 – body obstacle grid (flat Vec<bool> instead of HashSet)
-        let grid_size = (self.width * self.height) as usize;
-        let w = self.width as usize;
-        let mut body_cells = vec![false; grid_size];
-        for (idx, s) in self.snakes.iter().enumerate() {
-            let end = if eaters[idx] { s.len() } else { s.len().saturating_sub(1) };
-            for i in 0..end {
-                let p = s.body[i];
-                if p.in_bounds(self.width, self.height) {
-                    body_cells[p.y as usize * w + p.x as usize] = true;
-                }
+            if h.in_bounds(self.width, self.height) {
+                let ci = h.y as usize * w + h.x as usize;
+                if self.food[ci] { eaters[i] = true; }
             }
         }
 
+        // Phase 4 – body obstacle grid (flat Vec<bool>)
+        let grid_size = (self.width * self.height) as usize;
+        let mut body_cells = vec![false; grid_size];
+        for (idx, s) in self.snakes.iter().enumerate() {
+            let end = if eaters[idx] { s.len() } else { s.len().saturating_sub(1) };
+            s.body.iter().take(end).for_each(|&p| {
+                if p.in_bounds(self.width, self.height) {
+                    body_cells[p.y as usize * w + p.x as usize] = true;
+                }
+            });
+        }
+
         // Phase 5 – detect destroyed heads
-        let mut head_destroyed: Vec<bool> = vec![false; n];
+        let mut head_destroyed = vec![false; n];
         for (idx, &h) in proposed.iter().enumerate() {
             if eaters[idx] { continue; }
             if !h.in_bounds(self.width, self.height) || self.is_platform(h) {
@@ -179,7 +215,7 @@ impl GameState {
                 head_destroyed[idx] = true;
             }
         }
-        // head-to-head: O(n²), n ≤ 8 — cheaper than HashMap allocation
+        // head-to-head: O(n²), n ≤ 8
         for i in 0..n {
             if head_destroyed[i] || eaters[i] { continue; }
             for j in (i + 1)..n {
@@ -192,7 +228,7 @@ impl GameState {
         }
 
         // Phase 6 – apply movement
-        let mut should_remove: Vec<bool> = vec![false; n];
+        let mut should_remove = vec![false; n];
         for (idx, s) in self.snakes.iter_mut().enumerate() {
             if head_destroyed[idx] {
                 if s.len() >= 3 { s.body.pop_front(); }
@@ -203,10 +239,15 @@ impl GameState {
             }
         }
 
-        // Phase 7 – remove consumed power sources
+        // Phase 7 – remove consumed food (guard against two snakes on same cell)
         for (idx, &is_eater) in eaters.iter().enumerate().take(n) {
             if is_eater && !head_destroyed[idx] {
-                self.power.remove(&proposed[idx]);
+                let h = proposed[idx];
+                let ci = h.y as usize * w + h.x as usize;
+                if self.food[ci] {
+                    self.food[ci] = false;
+                    self.food_count -= 1;
+                }
             }
         }
 
@@ -229,13 +270,8 @@ impl GameState {
         let size = (self.width * self.height) as usize;
         let w = self.width as usize;
 
-        // Build power grid once (power set is small, ≤~20 items)
-        let mut pow = vec![false; size];
-        for &p in &self.power {
-            if p.in_bounds(self.width, self.height) {
-                pow[p.y as usize * w + p.x as usize] = true;
-            }
-        }
+        // food IS already a flat power-source grid — no allocation needed
+        let pow = &self.food;
 
         // snake_at: cell → snake index (u8::MAX = empty). Pre-allocated, cleared each iter.
         let mut snake_at = vec![u8::MAX; size];
@@ -244,11 +280,11 @@ impl GameState {
             // Rebuild snake_at for this iteration
             snake_at.fill(u8::MAX);
             for (idx, s) in self.snakes.iter().enumerate() {
-                for &p in &s.body {
+                s.body.iter().for_each(|&p| {
                     if p.in_bounds(self.width, self.height) {
                         snake_at[p.y as usize * w + p.x as usize] = idx as u8;
                     }
-                }
+                });
             }
 
             let mut to_fall: Vec<usize> = Vec::new();
@@ -267,9 +303,9 @@ impl GameState {
             }
 
             if to_fall.is_empty() { break; }
-            for &idx in &to_fall {
-                for p in &mut self.snakes[idx].body { p.y += 1; }
-            }
+            to_fall.iter().for_each(|&idx| {
+                self.snakes[idx].body.iter_mut().for_each(|p| p.y += 1);
+            });
         }
     }
 
@@ -277,15 +313,10 @@ impl GameState {
     // Grid helpers
     // --------------------------------------------------------
 
-    /// Flat bool grid: true where a power source lives.
+    /// Flat bool grid of food positions — returns a clone of self.food.
+    /// Prefer passing `&state.food` directly in hot paths to avoid the allocation.
     pub fn power_grid(&self) -> Vec<bool> {
-        let mut g = vec![false; (self.width * self.height) as usize];
-        for &p in &self.power {
-            if p.in_bounds(self.width, self.height) {
-                g[self.cell_idx(p)] = true;
-            }
-        }
-        g
+        self.food.clone()
     }
 
     /// Flat grid: each cell holds the snake index (in self.snakes) that occupies it,
@@ -293,11 +324,11 @@ impl GameState {
     pub fn snake_grid(&self) -> Vec<u8> {
         let mut g = vec![u8::MAX; (self.width * self.height) as usize];
         for (idx, s) in self.snakes.iter().enumerate() {
-            for &p in &s.body {
+            s.body.iter().for_each(|&p| {
                 if p.in_bounds(self.width, self.height) {
                     g[self.cell_idx(p)] = idx as u8;
                 }
-            }
+            });
         }
         g
     }
@@ -311,35 +342,35 @@ impl GameState {
     pub fn build_obstacles(&self) -> Vec<bool> {
         let mut obs = vec![false; (self.width * self.height) as usize];
         let w = self.width as usize;
-        for s in &self.snakes {
-            for i in 0..s.len().saturating_sub(1) {
-                let p = s.body[i];
+        self.snakes.iter().for_each(|s| {
+            s.body.iter().take(s.len().saturating_sub(1)).for_each(|&p| {
                 if p.in_bounds(self.width, self.height) {
                     obs[p.y as usize * w + p.x as usize] = true;
                 }
-            }
-        }
+            });
+        });
         obs
     }
 
     /// True if position at flat index `ci` is statically grounded
     /// (bottom edge, platform below, or power source below).
-    /// `pow` is the flat power-source grid.
+    /// `pow` is the flat food/power-source grid.
     #[inline]
     fn is_grounded_cell_ci(&self, ci: usize, w: usize, pow: &[bool]) -> bool {
         let below_ci = ci + w;
         below_ci >= self.grid.len() // bottom edge
-            || self.grid[below_ci] // platform
-            || pow[below_ci]       // power source
+            || self.grid[below_ci]  // platform
+            || pow[below_ci]        // power source
     }
 
     /// True if position `p` is supported from below (for external callers).
     #[inline]
     pub fn is_grounded_cell(&self, p: Pos) -> bool {
-        let below = p.translate(0, 1);
-        p.y + 1 >= self.height
-            || self.is_platform(below)
-            || self.power.contains(&below)
+        let below_y = p.y + 1;
+        if below_y >= self.height { return true; }
+        if p.x < 0 || p.x >= self.width { return false; }
+        let below_ci = below_y as usize * self.width as usize + p.x as usize;
+        self.grid[below_ci] || self.food[below_ci]
     }
 
     /// First direction from `start` toward any target, or None.
@@ -347,7 +378,6 @@ impl GameState {
     pub fn bfs_first_step(&self, start: Pos, targets: &[bool], obs: &[bool]) -> Option<Dir> {
         let w = self.width as usize;
         let size = w * self.height as usize;
-        // first_dir[ci] = direction index (0-3) to reach ci from start; u8::MAX = unvisited
         let mut first_dir = vec![u8::MAX; size];
         let mut q: VecDeque<usize> = VecDeque::new();
         let dirs = Dir::all();
@@ -388,7 +418,6 @@ impl GameState {
         if targets[start_ci] { return 0; }
 
         let size = w * self.height as usize;
-        // dist[ci] = -1 means unvisited
         let mut dist = vec![-1i32; size];
         let mut q: VecDeque<usize> = VecDeque::new();
         dist[start_ci] = 0;
@@ -501,7 +530,6 @@ mod tests {
     }
 
     /// Map with a solid platform row at the bottom (y = h-1).
-    /// Cells at y = h-2 are always grounded — good for movement tests.
     fn floored(w: i32, h: i32) -> GameState {
         let mut grid = vec![false; (w * h) as usize];
         for x in 0..w as usize {
@@ -523,9 +551,7 @@ mod tests {
 
     #[test]
     fn test_move_forward() {
-        // floored map so gravity doesn't interfere
         let mut s = floored(10, 10);
-        // head at (3,8), body going right along floor row y=8
         s.snakes.push(snake(0, 0, &[(3, 8), (4, 8), (5, 8)]));
         s.step(&acts(&[(0, Dir::Left)]));
         assert_eq!(s.snakes[0].head(), Pos::new(2, 8));
@@ -536,20 +562,18 @@ mod tests {
     fn test_eating_grows_and_consumes_power() {
         let mut s = floored(10, 10);
         s.snakes.push(snake(0, 0, &[(3, 8), (4, 8), (5, 8)]));
-        s.power.insert(Pos::new(2, 8)); // one step to the left
+        s.add_food(Pos::new(2, 8));
         s.step(&acts(&[(0, Dir::Left)]));
         assert_eq!(s.snakes[0].head(), Pos::new(2, 8));
-        assert_eq!(s.snakes[0].len(), 4); // grew
-        assert!(s.power.is_empty());      // food consumed
+        assert_eq!(s.snakes[0].len(), 4);
+        assert_eq!(s.food_count, 0);
     }
 
     // ── step: head destruction ───────────────────────────────────────
 
     #[test]
     fn test_head_into_wall_long_snake_loses_head() {
-        // len >= 3 hits OOB → loses front, survives with len-1
         let mut s = open(10, 10);
-        // Snake on bottom row, head at x=0 moving left → OOB
         s.snakes.push(snake(0, 0, &[(0, 9), (1, 9), (2, 9)]));
         s.step(&acts(&[(0, Dir::Left)]));
         assert_eq!(s.snakes[0].len(), 2);
@@ -558,7 +582,6 @@ mod tests {
 
     #[test]
     fn test_head_into_wall_short_snake_destroyed() {
-        // len < 3 hits OOB → removed entirely
         let mut s = open(10, 10);
         s.snakes.push(snake(0, 0, &[(0, 9), (1, 9)]));
         s.step(&acts(&[(0, Dir::Left)]));
@@ -568,11 +591,9 @@ mod tests {
     #[test]
     fn test_head_into_body_destroys_attacker() {
         let mut s = floored(10, 10);
-        // Snake 0 horizontal, Snake 1 drives its head into snake 0's body
         s.snakes.push(snake(0, 0, &[(5, 8), (4, 8), (3, 8)]));
-        s.snakes.push(snake(1, 1, &[(5, 7), (5, 6), (5, 5)])); // moving Down into (5,8)
+        s.snakes.push(snake(1, 1, &[(5, 7), (5, 6), (5, 5)]));
         s.step(&acts(&[(0, Dir::Right), (1, Dir::Down)]));
-        // Snake 1 head destroyed; len was 3 → len becomes 2
         let s1 = s.snakes.iter().find(|sn| sn.id == 1).unwrap();
         assert_eq!(s1.len(), 2);
     }
@@ -580,7 +601,6 @@ mod tests {
     #[test]
     fn test_head_on_head_both_shortened() {
         let mut s = floored(10, 10);
-        // Snake 0 moving Right, snake 1 moving Left — meet at (5, 8)
         s.snakes.push(snake(0, 0, &[(4, 8), (3, 8), (2, 8)]));
         s.snakes.push(snake(1, 1, &[(6, 8), (7, 8), (8, 8)]));
         s.step(&acts(&[(0, Dir::Right), (1, Dir::Left)]));
@@ -594,54 +614,40 @@ mod tests {
 
     #[test]
     fn test_gravity_unsupported_falls_to_bottom() {
-        // Open 10×10 map, no platforms. Snake floats at y=2-4; should fall to y=7-9.
         let mut s = open(10, 10);
         s.snakes.push(snake(0, 0, &[(5, 2), (5, 3), (5, 4)]));
         s.apply_gravity();
-        // bottom part must reach y=9 (bottom edge, 9+1 >= 10)
         assert_eq!(s.snakes[0].body[2], Pos::new(5, 9));
         assert_eq!(s.snakes[0].body[0], Pos::new(5, 7));
     }
 
     #[test]
     fn test_gravity_rests_on_platform() {
-        // Snake sits directly on a platform — should not move.
-        let mut s = open(10, 10);
-        // Platform at row y=5
-        for x in 0..10usize { s.grid[5 * 10 + x] = true; }
-        // Snake at y=2-4; tail at y=4, below is y=5 (platform) → grounded
+        // Build grid with platform at row y=5, then construct state
+        let mut grid = vec![false; 100];
+        for x in 0..10usize { grid[5 * 10 + x] = true; }
+        let mut s = GameState::new(10, 10, grid);
         s.snakes.push(snake(0, 0, &[(5, 2), (5, 3), (5, 4)]));
         s.apply_gravity();
-        assert_eq!(s.snakes[0].body[2], Pos::new(5, 4)); // didn't move
+        assert_eq!(s.snakes[0].body[2], Pos::new(5, 4));
     }
 
     #[test]
     fn test_gravity_snake_stacks_on_snake() {
-        // Snake B is on bottom row (grounded). Snake A is floating above B.
-        // Snake A should fall and come to rest on top of snake B.
         let mut s = open(10, 5);
-        // B: grounded at bottom row (y=4, 4+1=5 >= 5 → bottom edge)
         s.snakes.push(snake(1, 1, &[(5, 4), (4, 4), (3, 4)]));
-        // A: floating at y=1, above B's cell (5,4) — would need to land at y=3
         s.snakes.push(snake(0, 0, &[(5, 1), (5, 2), (5, 3)]));
-        // After gravity: A's tail at (5,3) has below (5,4) occupied by B → grounded
-        // A should NOT fall (already grounded via B's body)
         s.apply_gravity();
         let b = s.snakes.iter().find(|sn| sn.id == 1).unwrap();
         let a = s.snakes.iter().find(|sn| sn.id == 0).unwrap();
-        assert_eq!(b.body[0], Pos::new(5, 4)); // B unchanged
-        assert_eq!(a.body[2], Pos::new(5, 3)); // A's tail rests on B's head
+        assert_eq!(b.body[0], Pos::new(5, 4));
+        assert_eq!(a.body[2], Pos::new(5, 3));
     }
 
     #[test]
     fn test_gravity_snake_falls_off_bottom() {
-        // Snake falls out of the 10-row map (bottom = y=9, falls past it)
-        // Actually fall is capped at bottom edge. Let me test border removal instead:
-        // A 3-tall map, snake at y=0 falls to y=2 (the only valid row).
         let mut s = open(5, 3);
-        s.snakes.push(snake(0, 0, &[(2, 0)])); // single-cell snake floating
-        // Single cell at y=0 — below y=1 is not bottom edge (h=3 so bottom edge is y=2).
-        // Will fall to y=2 where y+1=3 >= 3 → grounded.
+        s.snakes.push(snake(0, 0, &[(2, 0)]));
         s.apply_gravity();
         assert_eq!(s.snakes[0].body[0], Pos::new(2, 2));
     }
@@ -652,27 +658,21 @@ mod tests {
     fn test_bfs_dist_open_space() {
         let s = open(10, 10);
         let mut targets = vec![false; 100];
-        targets[3 * 10 + 8] = true; // (8, 3)
+        targets[3 * 10 + 8] = true;
         let obs = vec![false; 100];
-        // Manhattan distance from (3,3) to (8,3) = 5
         assert_eq!(s.bfs_dist(Pos::new(3, 3), &targets, &obs), 5);
     }
 
     #[test]
     fn test_bfs_dist_wall_blocks_returns_max() {
-        let mut s = open(10, 10);
-        // Vertical wall at x=5, all rows
-        for y in 0..10usize { s.grid[y * 10 + 5] = true; }
+        // Build fully-enclosed grid: vertical wall at x=5, plus top/bottom rows
+        let mut grid = vec![false; 100];
+        for y in 0..10usize { grid[y * 10 + 5] = true; }
+        for x in 0..10usize { grid[x] = true; grid[9 * 10 + x] = true; }
+        let s = GameState::new(10, 10, grid);
         let mut targets = vec![false; 100];
-        targets[3 * 10 + 8] = true; // (8, 3) — behind the wall
+        targets[3 * 10 + 8] = true;
         let obs = vec![false; 100];
-        // No top/bottom gap so completely blocked
-        // Actually BFS can go around y=0 or y=9 rows...
-        // Let's also wall the top and bottom to guarantee no path
-        for x in 0..10usize {
-            s.grid[x] = true;       // top row
-            s.grid[9 * 10 + x] = true; // bottom row
-        }
         assert_eq!(s.bfs_dist(Pos::new(3, 3), &targets, &obs), i32::MAX);
     }
 
@@ -689,9 +689,8 @@ mod tests {
     fn test_bfs_first_step_moves_toward_food() {
         let s = open(10, 10);
         let mut targets = vec![false; 100];
-        targets[5 * 10 + 5] = true; // food at (5, 5)
+        targets[5 * 10 + 5] = true;
         let obs = vec![false; 100];
-        // From (2, 5): food is to the Right
         let dir = s.bfs_first_step(Pos::new(2, 5), &targets, &obs);
         assert_eq!(dir, Some(Dir::Right));
     }
@@ -699,7 +698,7 @@ mod tests {
     #[test]
     fn test_bfs_first_step_no_food_returns_none() {
         let s = open(10, 10);
-        let targets = vec![false; 100]; // no food
+        let targets = vec![false; 100];
         let obs = vec![false; 100];
         assert_eq!(s.bfs_first_step(Pos::new(5, 5), &targets, &obs), None);
     }
@@ -709,19 +708,18 @@ mod tests {
     #[test]
     fn test_build_obstacles_excludes_tail() {
         let mut s = open(10, 10);
-        // head=(2,5), body=(3,5), tail=(4,5)
         s.snakes.push(snake(0, 0, &[(2, 5), (3, 5), (4, 5)]));
         let obs = s.build_obstacles();
-        assert!(obs[5 * 10 + 2]);  // head blocked
-        assert!(obs[5 * 10 + 3]);  // body blocked
-        assert!(!obs[5 * 10 + 4]); // tail NOT blocked (it vacates)
+        assert!(obs[5 * 10 + 2]);
+        assert!(obs[5 * 10 + 3]);
+        assert!(!obs[5 * 10 + 4]);
     }
 
     #[test]
-    fn test_power_grid_matches_power_set() {
+    fn test_power_grid_matches_food() {
         let mut s = open(10, 10);
-        s.power.insert(Pos::new(3, 4));
-        s.power.insert(Pos::new(7, 1));
+        s.add_food(Pos::new(3, 4));
+        s.add_food(Pos::new(7, 1));
         let pg = s.power_grid();
         assert!(pg[4 * 10 + 3]);
         assert!(pg[1 * 10 + 7]);
@@ -734,12 +732,35 @@ mod tests {
         s.snakes.push(snake(0, 0, &[(2, 5), (3, 5), (4, 5)]));
         s.snakes.push(snake(1, 1, &[(7, 7), (7, 8)]));
         let sg = s.snake_grid();
-        assert_eq!(sg[5 * 10 + 2], 0); // snake index 0
+        assert_eq!(sg[5 * 10 + 2], 0);
         assert_eq!(sg[5 * 10 + 3], 0);
         assert_eq!(sg[5 * 10 + 4], 0);
-        assert_eq!(sg[7 * 10 + 7], 1); // snake index 1
+        assert_eq!(sg[7 * 10 + 7], 1);
         assert_eq!(sg[8 * 10 + 7], 1);
-        assert_eq!(sg[0], u8::MAX);    // empty cell
+        assert_eq!(sg[0], u8::MAX);
+    }
+
+    // ── clone throughput ─────────────────────────────────────────────
+
+    #[test]
+    fn test_clone_throughput() {
+        // Regression guard: 100k clones of a realistic 6-snake state must be fast.
+        // With Arc<grid> + flat food, grid is never copied and food is a memcpy.
+        let mut s = floored(20, 15);
+        for i in 0u8..6 {
+            let x = i as i32 * 2 + 2;
+            s.snakes.push(snake(i, i / 3, &[(x, 13), (x + 1, 13), (x + 2, 13)]));
+        }
+        for &(x, y) in &[(5i32, 13i32), (10, 13), (14, 13)] {
+            s.add_food(Pos::new(x, y));
+        }
+        let t0 = std::time::Instant::now();
+        for _ in 0..100_000 {
+            let _ = s.clone();
+        }
+        let ms = t0.elapsed().as_millis();
+        eprintln!("100k GameState::clone() = {}ms", ms);
+        assert!(ms < 1000, "clone too slow: {}ms", ms);
     }
 }
 
@@ -755,10 +776,9 @@ pub fn visualize(state: &GameState) -> String {
     for y in 0..h { for x in 0..w {
         if state.grid[y * w + x] { display[y][x] = '#'; }
     }}
-    for &p in &state.power {
-        if p.in_bounds(state.width, state.height) {
-            display[p.y as usize][p.x as usize] = '*';
-        }
+    for (ci, _) in state.food.iter().enumerate().filter(|(_, &b)| b) {
+        let (x, y) = (ci % w, ci / w);
+        display[y][x] = '*';
     }
     for s in &state.snakes {
         for (i, &p) in s.body.iter().enumerate() {
@@ -771,7 +791,7 @@ pub fn visualize(state: &GameState) -> String {
 
     format!(
         "Turn {:3} | P0: {:3} parts | P1: {:3} parts | food: {}\n{}",
-        state.turn, state.score(0), state.score(1), state.power.len(),
+        state.turn, state.score(0), state.score(1), state.food_count,
         display.iter().map(|r| r.iter().collect::<String>()).collect::<Vec<_>>().join("\n")
     )
 }
@@ -799,15 +819,15 @@ pub trait Bot {
 /// Uses gravity-aware BFS so paths through open air are not considered.
 /// Standalone function so BeamSearchBot can call it without trait overhead.
 pub fn greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
-    let obs = state.build_obstacles(); // Vec<bool>
-    let pow = state.power_grid();      // Vec<bool>
-    let mut actions = HashMap::new();
-    for s in state.snakes.iter().filter(|s| s.player == player) {
-        if let Some(d) = state.bfs_first_step_grounded(s.head(), &pow, &obs) {
-            actions.insert(s.id, d);
-        }
-    }
-    actions
+    let obs = state.build_obstacles();
+    // state.food IS the power grid — pass directly, no allocation
+    state.snakes.iter()
+        .filter(|s| s.player == player)
+        .filter_map(|s| {
+            state.bfs_first_step_grounded(s.head(), &state.food, &obs)
+                .map(|d| (s.id, d))
+        })
+        .collect()
 }
 
 /// All valid direction combos for `player`'s snakes (U-turns pruned).
@@ -853,14 +873,14 @@ impl OldBeamSearchBot {
 /// Old greedy: plain BFS (no grounding restriction).
 pub fn old_greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
     let obs = state.build_obstacles();
-    let pow = state.power_grid();
-    let mut actions = HashMap::new();
-    for s in state.snakes.iter().filter(|s| s.player == player) {
-        if let Some(d) = state.bfs_first_step(s.head(), &pow, &obs) {
-            actions.insert(s.id, d);
-        }
-    }
-    actions
+    // state.food IS the power grid — pass directly, no allocation
+    state.snakes.iter()
+        .filter(|s| s.player == player)
+        .filter_map(|s| {
+            state.bfs_first_step(s.head(), &state.food, &obs)
+                .map(|d| (s.id, d))
+        })
+        .collect()
 }
 
 /// Old heuristic: plain BFS food distance, no stability term, -30 unreachable penalty.
@@ -871,12 +891,11 @@ pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
     let opp = state.score(1 - player) as i32;
 
     let obs = state.build_obstacles();
-    let pow = state.power_grid();
-
+    // state.food IS the power grid — pass directly, no allocation
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
-            let d = state.bfs_dist(s.head(), &pow, &obs);
+            let d = state.bfs_dist(s.head(), &state.food, &obs);
             if d == i32::MAX { -30 } else { 20 - d.min(20) }
         })
         .sum();
@@ -901,7 +920,7 @@ mod tests {
         s.snakes.push(Snake::new(1, vec![Pos::new(17, 13), Pos::new(16, 13), Pos::new(15, 13)], 1));
         // A handful of food items
         for &(x, y) in &[(5, 13), (10, 13), (14, 13), (7, 13), (12, 13)] {
-            s.power.insert(Pos::new(x, y));
+            s.add_food(Pos::new(x, y));
         }
         s
     }
@@ -1082,13 +1101,13 @@ fn main() {
     // ── Game loop ────────────────────────────────────────────────────
     loop {
         let power_count: usize = read_line!(lines).trim().parse().unwrap();
-        state.power.clear();
+        state.clear_food();
         for _ in 0..power_count {
             let line = read_line!(lines);
             let mut parts = line.trim().split_whitespace();
             let x: i32 = parts.next().unwrap().parse().unwrap();
             let y: i32 = parts.next().unwrap().parse().unwrap();
-            state.power.insert(Pos::new(x, y));
+            state.add_food(Pos::new(x, y));
         }
 
         let snake_count: usize = read_line!(lines).trim().parse().unwrap();

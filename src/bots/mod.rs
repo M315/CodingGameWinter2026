@@ -26,15 +26,15 @@ pub trait Bot {
 /// Uses gravity-aware BFS so paths through open air are not considered.
 /// Standalone function so BeamSearchBot can call it without trait overhead.
 pub fn greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
-    let obs = state.build_obstacles(); // Vec<bool>
-    let pow = state.power_grid();      // Vec<bool>
-    let mut actions = HashMap::new();
-    for s in state.snakes.iter().filter(|s| s.player == player) {
-        if let Some(d) = state.bfs_first_step_grounded(s.head(), &pow, &obs) {
-            actions.insert(s.id, d);
-        }
-    }
-    actions
+    let obs = state.build_obstacles();
+    // state.food IS the power grid — pass directly, no allocation
+    state.snakes.iter()
+        .filter(|s| s.player == player)
+        .filter_map(|s| {
+            state.bfs_first_step_grounded(s.head(), &state.food, &obs)
+                .map(|d| (s.id, d))
+        })
+        .collect()
 }
 
 /// All valid direction combos for `player`'s snakes (U-turns pruned).

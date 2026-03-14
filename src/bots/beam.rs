@@ -25,32 +25,31 @@ pub fn heuristic(state: &GameState, player: u8) -> i32 {
     let my  = state.score(player) as i32;
     let opp = state.score(1 - player) as i32;
 
-    // Build flat grids once — no per-snake HashSet allocations
+    // state.food IS the power grid — no allocation needed for pow
     let obs = state.build_obstacles(); // Vec<bool>: body obstacles
-    let pow = state.power_grid();      // Vec<bool>: food/power positions
     let sng = state.snake_grid();      // Vec<u8>:   snake index per cell
-
     let w = state.width as usize;
 
     // Gravity-aware food distance
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
-            let d = state.bfs_dist_grounded(s.head(), &pow, &obs);
+            let d = state.bfs_dist_grounded(s.head(), &state.food, &obs);
             if d == i32::MAX { -50 } else { 20 - d.min(20) }
         })
         .sum();
 
-    // Stability: penalise snakes not grounded — no HashSet, uses flat sng+pow grids
+    // Stability: penalise snakes not grounded
     let stability: i32 = state.snakes.iter().enumerate()
         .filter(|(_, s)| s.player == player)
         .map(|(snake_idx, s)| {
             let grounded = s.body.iter().any(|&p| {
                 let below_y = p.y + 1;
                 if below_y >= state.height { return true; }
+                if p.x < 0 || p.x >= state.width { return false; }
                 let below_ci = below_y as usize * w + p.x as usize;
                 if state.grid[below_ci] { return true; }
-                if pow[below_ci] { return true; }
+                if state.food[below_ci] { return true; }
                 let sat = sng[below_ci];
                 sat != u8::MAX && sat as usize != snake_idx
             });

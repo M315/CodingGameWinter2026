@@ -72,6 +72,7 @@ def bundle(bot: str = "beam", all_bots: bool = False) -> str:
     return (
         "#![allow(dead_code, unused_imports, unused_variables)]\n"
         "use std::collections::{HashMap, HashSet, VecDeque};\n"
+        "use std::sync::Arc;\n"
         "use std::time::{Duration, Instant};\n"
         "use std::io::{self, BufRead};\n\n"
         + body
