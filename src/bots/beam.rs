@@ -273,6 +273,68 @@ pub fn heuristic_v3(state: &GameState, player: u8) -> i32 {
     score_delta + food_score + stability
 }
 
+/// V4 heuristic: score delta + food proximity (v1) + Voronoi territory.
+///
+/// Territory is the key signal v1–v3 all lack: how much of the board can
+/// each team reach?  Two multi-source BFS calls (one per team, same cost as
+/// v3) partition every reachable cell by which team arrives first.  The
+/// signed territory count (mine − opponent) is weighted modestly so that a
+/// score lead still dominates, but positional squeeze or space dominance
+/// shifts the beam toward safer lines.
+///
+/// Cost: 2 multi-source BFS + N_my early-exit BFS (food proximity).
+///       ≈ same wall-clock as v3; territory replaces the (failed) competition
+///       signal with a genuinely novel one.
+pub fn heuristic_v4(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let score_delta = state.score(player) as i32 * 100
+                    - state.score(1 - player) as i32 * 80;
+
+    let obs = state.build_obstacles();
+    let sng = state.snake_grid();
+    let w   = state.width as usize;
+
+    let stability = stability_score(state, player, &sng, w);
+
+    // Food proximity — identical to v1 (early-exit per snake, O(W*H) each).
+    let food_bonus: i32 = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|s| {
+            let d = state.bfs_dist_grounded(s.head(), &state.food, &obs);
+            if d == i32::MAX { -50 } else { 20 - d.min(20) }
+        })
+        .sum();
+
+    // Territory — Voronoi partition via two multi-source BFS calls.
+    // Each cell goes to whichever team arrives first; ties are neutral.
+    let my_heads: Vec<Pos> = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|s| s.head())
+        .collect();
+    let op_heads: Vec<Pos> = state.snakes.iter()
+        .filter(|s| s.player != player)
+        .map(|s| s.head())
+        .collect();
+
+    let (my_dist, _) = state.bfs_multisource_dist_map(&my_heads, &state.food, &obs);
+    let (op_dist, _) = state.bfs_multisource_dist_map(&op_heads, &state.food, &obs);
+
+    // Count cells: +1 for mine, -1 for opponent, 0 for tied/unreachable.
+    let territory: i32 = my_dist.iter().zip(op_dist.iter())
+        .map(|(&md, &od)| match (md, od) {
+            (m, o) if m < 0 && o < 0 => 0,
+            (m, _) if m < 0          => -1, // only opponent reaches it
+            (_, o) if o < 0          =>  1, // only I reach it
+            (m, o) if m < o          =>  1, // I arrive first
+            (m, o) if o < m          => -1, // opponent arrives first
+            _                        =>  0, // tied
+        })
+        .sum();
+
+    score_delta + food_bonus + territory * 3 + stability
+}
+
 impl Bot for BeamSearchBot {
     fn name(&self) -> &str { "BeamSearchBot" }
 

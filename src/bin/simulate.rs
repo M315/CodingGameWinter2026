@@ -6,9 +6,10 @@
 ///   cargo run --bin simulate -- --p0 greedy --p1 greedy --bench 20 --quiet
 ///   cargo run --bin simulate -- --p0 beam --p1 beam --bench 5
 ///   cargo run --bin simulate -- --map path/to/map.txt
+///   cargo run --bin simulate -- --maps-dir path/to/maps/
 ///   cargo run --bin simulate -- --p0 beam --p1 old_beam --bench 50 --time-limit 10
 ///
-/// Available bots: wait | greedy | beam | beam_v1 | beam_v2 | beam_v3 | old_beam | mcts
+/// Available bots: wait | greedy | beam | beam_v1 | beam_v2 | beam_v3 | beam_v4 | old_beam | mcts
 ///
 /// Heuristic versioning protocol:
 ///   • `beam`      always points to the LATEST heuristic
@@ -19,10 +20,29 @@
 /// --time-limit <ms>  Per-turn budget for all beam bots (default: 40).
 ///                    Lower values make benchmarks faster while preserving
 ///                    relative win rates. Disables the 950ms first-turn bonus.
+///
+/// Maps directory:
+///   Default: ./maps/ (relative to cwd — run from project root).
+///   Override with --maps-dir <path>.
+///   In bench mode all *.txt files in the directory are loaded (sorted by name)
+///   and rotated through so results aren't the same deterministic game repeated N times.
+///
+/// Timing guide (beam vs beam, 40ms budget):
+///   01/03  (1 snake/player,  3 combos): ~1s/game
+///   02/04  (2 snakes/player, 9 combos): ~2-4s/game
+///   05     (3 snakes/player,27 combos): ~10s/game  ← real contest map
+///
+///   Quick 20-game bench (maps 01-04 only):
+///     /tmp/sim -- --bench 20 --maps-dir maps/quick/
+///   Full competition-accurate bench (all 5 maps):
+///     /tmp/sim -- --bench 50
+///   Single real-map test:
+///     /tmp/sim -- --map maps/05_exotec_arena.txt
 
 use snakebyte::*;
 use std::collections::HashMap;
 use std::env;
+use std::path::Path;
 use std::time::Instant;
 
 // ============================================================
@@ -38,6 +58,7 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
         "beam_v1"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
         "beam_v2"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v2)),
         "beam_v3"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v3)),
+        "beam_v4"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v4)),
         "old_beam" => Box::new(OldBeamSearchBot::new(120, 8, time_limit_ms)),
         "mcts"     => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
         _ => {
@@ -55,15 +76,27 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let arg = |flag: &str| args.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str());
 
-    let p0_name      = arg("--p0").unwrap_or("beam");
-    let p1_name      = arg("--p1").unwrap_or("greedy");
-    let bench        = arg("--bench").and_then(|s| s.parse().ok()).unwrap_or(1usize);
-    let quiet        = args.contains(&"--quiet".to_string()) || bench > 1;
-    let time_limit   = arg("--time-limit").and_then(|s| s.parse().ok()).unwrap_or(40u64);
-    let map_str = match arg("--map") {
-        Some(path) => std::fs::read_to_string(path).expect("Cannot read map file"),
-        None       => default_map().to_string(),
+    let p0_name    = arg("--p0").unwrap_or("beam");
+    let p1_name    = arg("--p1").unwrap_or("greedy");
+    let bench      = arg("--bench").and_then(|s| s.parse().ok()).unwrap_or(1usize);
+    let quiet      = args.contains(&"--quiet".to_string()) || bench > 1;
+    let time_limit = arg("--time-limit").and_then(|s| s.parse().ok()).unwrap_or(40u64);
+
+    // Build the map pool.
+    // --map <file>  → single fixed map for all games (useful for focused testing)
+    // --maps-dir <dir> → load all *.txt files from that dir (overrides default)
+    // default       → load from ./maps/ directory
+    let pool: Vec<String> = if let Some(path) = arg("--map") {
+        vec![std::fs::read_to_string(path).expect("Cannot read map file")]
+    } else {
+        let dir = arg("--maps-dir").unwrap_or("maps");
+        load_maps_dir(dir)
     };
+
+    if pool.is_empty() {
+        eprintln!("No maps found. Place *.txt map files in ./maps/ or use --map <file>.");
+        std::process::exit(1);
+    }
 
     let mut p0_wins = 0usize;
     let mut p1_wins = 0usize;
@@ -71,7 +104,8 @@ fn main() {
     let total_t = Instant::now();
 
     for game_n in 0..bench {
-        let mut state = build_state_from_map(&map_str);
+        let map_str = &pool[game_n % pool.len()];
+        let mut state = build_state_from_map(map_str);
         // Skip the 950ms first-turn bonus during multi-game benchmarks —
         // it distorts timings without affecting relative win rates.
         if bench > 1 { state.turn = 1; }
@@ -117,12 +151,43 @@ fn main() {
 }
 
 // ============================================================
+// Map directory loader
+// ============================================================
+
+/// Load all *.txt files from `dir`, sorted by filename.
+/// Exits with an error message if the directory can't be read.
+fn load_maps_dir(dir: &str) -> Vec<String> {
+    let path = Path::new(dir);
+    if !path.is_dir() {
+        eprintln!(
+            "Maps directory '{}' not found. Run from the project root, or use --maps-dir <path>.",
+            dir
+        );
+        std::process::exit(1);
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(path)
+        .expect("Cannot read maps directory")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("txt"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    if entries.is_empty() {
+        eprintln!("No *.txt files found in '{}'.", dir);
+        std::process::exit(1);
+    }
+    entries.iter().map(|e| {
+        std::fs::read_to_string(e.path())
+            .unwrap_or_else(|_| panic!("Cannot read map file: {:?}", e.path()))
+    }).collect()
+}
+
+// ============================================================
 // Map loader
 // ============================================================
 
 /// Build a GameState from a plain-text map string.
 ///
-/// Format:
+/// Format (see maps/*.txt for examples):
 ///   Lines starting with '#' or '.'  → grid rows (top to bottom)
 ///   P x y                           → power source at (x, y)
 ///   S <player> <id>  x,y x,y ...   → snake, head first
@@ -173,42 +238,4 @@ fn build_state_from_map(map: &str) -> GameState {
 
     state.apply_gravity();
     state
-}
-
-// ============================================================
-// Default test map (20×15)
-// ============================================================
-
-fn default_map() -> &'static str {
-    r"
-####################
-#..................#
-#..................#
-#....###...........#
-#..................#
-#.........###......#
-#..................#
-#...###............#
-#..................#
-#...........###....#
-#..................#
-#..................#
-#....###...........#
-#..................#
-####################
-
-P 3 1
-P 7 2
-P 14 1
-P 2 5
-P 17 5
-P 5 8
-P 13 8
-P 3 11
-P 16 11
-P 9 6
-
-S 0 0  2,1 2,2 2,3
-S 1 1  17,1 17,2 17,3
-"
 }

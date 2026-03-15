@@ -379,9 +379,8 @@ learned value function trained on outcomes.
 
 ### Plan update
 T1-A food competition approach shelved. Moving to:
-- T2-B: territory / flood-fill liberty count — a signal beam CAN'T see implicitly
-  (reachable cells from head), not redundant with greedy-opponent simulation.
 - T2-A: BFS scratch buffers (perf, safe win regardless of signal quality).
+- Shelve further leaf-heuristic experiments until perf baseline is improved.
 
 ### Lessons
 - **MCTS suits domains where eval function is hard**: Go, Hex, stochastic games.
@@ -393,3 +392,39 @@ T1-A food competition approach shelved. Moving to:
   (same as beam) is the right practical choice.
 - **Arena-based MCTS implementation is clean in Rust**: flat Vec<Node> with usize
   indices avoids all borrow-checker issues with tree traversal.
+
+---
+
+## 2026-03-15 — heuristic_v4 territory/Voronoi — null result; simulation improvements
+
+### heuristic_v4 (territory Voronoi) — failed
+- 2 multi-source BFS calls per evaluation (same overhead as v3), territory = Voronoi
+  cell count (mine − opponent) × 3, added on top of v1 food proximity + stability.
+- 5ms: v4 40% vs v1 36% (mildly better at shallow depth)
+- 40ms: v4 26% vs v1 48% (performance overhead causes regression)
+- 200ms: v4 26% vs v1 50% (even at generous budget, territory adds noise)
+- Root cause: double failure — (1) performance overhead from extra BFS, (2) territory
+  at depth-8 leaf doesn't correlate with outcome (opponent adapts, score_delta already
+  captures food race implicitly). This is worse than v2/v3 which only failed on perf.
+
+### Simulation improvements shipped
+1. **External map files**: Maps moved to `maps/*.txt` (sorted by name, rotated in bench).
+   Add/edit maps without touching Rust. Format: same `#/.`, `P x y`, `S player id coords`.
+2. **Map pool**: 01_default, 02_small_multi, 03_wide, 04_tall_multi, 05_exotec_arena.
+3. **Timing root cause**: exotec_arena has 3 snakes/player → 3³=27 combos → 9× beam
+   cost vs default (3 combos). ~10s/game vs ~1s/game. Maps 02/04 (2/player, 9 combos)
+   take ~2-4s/game.
+4. **Bounded vs open maps**: Maps 01-04 have full border walls (snakes can't exit).
+   05_exotec_arena has NO border walls (open top/sides — snakes can exit by moving OOB).
+   Gravity never causes map exit (bottom edge = support even without wall).
+
+### Benchmark workflow
+- Quick iteration (maps 01-04): use `--map maps/01_default.txt` or add a `maps/quick/` subdir
+- Competition-accurate (all 5 maps): default `--bench 50` takes ~100s (10 exotec games)
+- Use `--map maps/05_exotec_arena.txt` for single-map exotec testing
+
+### Next priority
+T2-A: BFS scratch buffers — eliminate Vec<i32>/Vec<bool> alloc per BFS call.
+Each heuristic_v1 call does N_my early-exit BFS, each allocating W×H Vec.
+Thread-local reusable buffers + generation counter would eliminate these allocs
+entirely. Expected 20-30% speed gain → more beam iterations → better decisions.
