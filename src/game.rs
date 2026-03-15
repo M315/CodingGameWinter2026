@@ -1,5 +1,57 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
+
+/// Compact action map: `arr[snake_id]` = direction for that snake this turn.
+/// Indexed by `snake.id as usize`; `None` means "keep current direction".
+/// 8 bytes on the stack (niche-optimized `Option<Dir>` = 1 byte × 8), `Copy` — no heap use.
+pub type DirArr = [Option<Dir>; 8];
+
+// ============================================================
+// Thread-local BFS scratch buffers
+// ============================================================
+//
+// Eliminate the Vec<i32>/Vec<u8>/VecDeque allocs that previously happened on
+// every BFS call inside the beam inner loop (~5 000+/turn on 3-snake maps).
+// Each worker thread owns one BfsScratch via thread_local!; calls borrow it
+// for the duration of a single BFS, reset (fill) the needed slice, and return
+// a scalar/Option — no heap interaction after the first call on that thread.
+
+struct BfsScratch {
+    i32_buf: Vec<i32>,   // used as dist[] (sentinel -1)
+    u8_buf:  Vec<u8>,    // used as first_dir[] (sentinel u8::MAX)
+    queue:   VecDeque<usize>,
+}
+
+impl BfsScratch {
+    #[inline]
+    fn ensure_i32(&mut self, size: usize) {
+        if self.i32_buf.len() < size { self.i32_buf.resize(size, -1); }
+    }
+    #[inline]
+    fn ensure_u8(&mut self, size: usize) {
+        if self.u8_buf.len() < size { self.u8_buf.resize(size, u8::MAX); }
+    }
+}
+
+thread_local! {
+    // Reusable body-obstacle grid for step_phases_2_to_11 phase 4.
+    // Separate from OBS_SCRATCH (which is used by build_obstacles in heuristic/BFS callers).
+    static STEP_SCRATCH: RefCell<Vec<bool>> = RefCell::new(Vec::new());
+    // Reusable snake-index grid for apply_gravity.
+    // Kept separate from SNG_SCRATCH (which is used by snake_grid in heuristic callers).
+    static GRAV_SCRATCH: RefCell<Vec<u8>>   = RefCell::new(Vec::new());
+
+    static BFS_SCRATCH: RefCell<BfsScratch> = RefCell::new(BfsScratch {
+        i32_buf: Vec::new(),
+        u8_buf:  Vec::new(),
+        queue:   VecDeque::new(),
+    });
+    // Separate RefCells so with_obstacles / with_snake_grid can be borrowed
+    // simultaneously with BFS_SCRATCH (all three are accessed together in heuristic_v1).
+    static OBS_SCRATCH: RefCell<Vec<bool>> = RefCell::new(Vec::new());
+    static SNG_SCRATCH: RefCell<Vec<u8>>   = RefCell::new(Vec::new());
+}
 
 // ============================================================
 // Primitive types
@@ -162,6 +214,18 @@ impl GameState {
     // Step: advance the game state by one turn in-place
     // --------------------------------------------------------
 
+    /// Hot-path variant of `step()` using a stack-allocated `DirArr`.
+    /// Avoids the HashMap lookup overhead in Phase 1; zero heap use for action dispatch.
+    #[inline]
+    pub fn step_arr(&mut self, actions: &DirArr) {
+        let n = self.snakes.len();
+        if n == 0 { self.turn += 1; return; }
+        self.snakes.iter_mut().for_each(|s| {
+            if let Some(d) = actions[s.id as usize] { s.dir = d; }
+        });
+        self.step_phases_2_to_11();
+    }
+
     pub fn step(&mut self, actions: &std::collections::HashMap<u8, Dir>) {
         let n = self.snakes.len();
         if n == 0 { self.turn += 1; return; }
@@ -171,11 +235,20 @@ impl GameState {
             if let Some(&d) = actions.get(&s.id) { s.dir = d; }
         });
 
-        // Phase 2 – proposed new head positions
-        let proposed: Vec<Pos> = self.snakes.iter().map(|s| {
+        self.step_phases_2_to_11();
+    }
+
+    /// Phases 2–11 of `step()`, shared by both `step()` and `step_arr()`.
+    /// Called after Phase 1 (direction overrides) has already been applied.
+    fn step_phases_2_to_11(&mut self) {
+        let n = self.snakes.len();
+
+        // Phase 2 – proposed new head positions (stack array, n ≤ 8)
+        let mut proposed = [Pos::new(0, 0); 8];
+        self.snakes.iter().enumerate().for_each(|(i, s)| {
             let (dx, dy) = s.dir.delta();
-            s.head().translate(dx, dy)
-        }).collect();
+            proposed[i] = s.head().translate(dx, dy);
+        });
 
         // Phase 3 – eaters: head lands on a food cell (flat bool array, max 32 snakes)
         let w = self.width as usize;
@@ -187,31 +260,36 @@ impl GameState {
             }
         }
 
-        // Phase 4 – body obstacle grid (flat Vec<bool>)
+        // Phase 4 + 5 – body obstacle grid (TLS) + destroyed head detection
         let grid_size = (self.width * self.height) as usize;
-        let mut body_cells = vec![false; grid_size];
-        for (idx, s) in self.snakes.iter().enumerate() {
-            let end = if eaters[idx] { s.len() } else { s.len().saturating_sub(1) };
-            s.body.iter().take(end).for_each(|&p| {
-                if p.in_bounds(self.width, self.height) {
-                    body_cells[p.y as usize * w + p.x as usize] = true;
+        let mut head_destroyed = [false; 8];
+        STEP_SCRATCH.with(|cell| {
+            let mut g = cell.borrow_mut();
+            if g.len() < grid_size { g.resize(grid_size, false); }
+            let body_cells = &mut g[..grid_size];
+            body_cells.fill(false);
+            // Phase 4 – mark body cells (TLS, no heap alloc after first call)
+            for (idx, s) in self.snakes.iter().enumerate() {
+                let end = if eaters[idx] { s.len() } else { s.len().saturating_sub(1) };
+                s.body.iter().take(end).for_each(|&p| {
+                    if p.in_bounds(self.width, self.height) {
+                        body_cells[p.y as usize * w + p.x as usize] = true;
+                    }
+                });
+            }
+            // Phase 5 – OOB / platform / body collision
+            for (idx, &h) in proposed.iter().enumerate().take(n) {
+                if eaters[idx] { continue; }
+                if !h.in_bounds(self.width, self.height) || self.is_platform(h) {
+                    head_destroyed[idx] = true;
+                    continue;
                 }
-            });
-        }
-
-        // Phase 5 – detect destroyed heads
-        let mut head_destroyed = vec![false; n];
-        for (idx, &h) in proposed.iter().enumerate() {
-            if eaters[idx] { continue; }
-            if !h.in_bounds(self.width, self.height) || self.is_platform(h) {
-                head_destroyed[idx] = true;
-                continue;
+                if body_cells[h.y as usize * w + h.x as usize] {
+                    head_destroyed[idx] = true;
+                }
             }
-            if body_cells[h.y as usize * w + h.x as usize] {
-                head_destroyed[idx] = true;
-            }
-        }
-        // head-to-head: O(n²), n ≤ 8
+        });
+        // head-to-head: O(n²), n ≤ 8 — outside TLS closure (no grid needed)
         for i in 0..n {
             if head_destroyed[i] || eaters[i] { continue; }
             for j in (i + 1)..n {
@@ -223,8 +301,8 @@ impl GameState {
             }
         }
 
-        // Phase 6 – apply movement
-        let mut should_remove = vec![false; n];
+        // Phase 6 – apply movement (stack array, n ≤ 8)
+        let mut should_remove = [false; 8];
         for (idx, s) in self.snakes.iter_mut().enumerate() {
             if head_destroyed[idx] {
                 if s.len() >= 3 { s.body.pop_front(); }
@@ -264,45 +342,54 @@ impl GameState {
     /// Drop all unsupported snakes simultaneously until the state is stable.
     pub fn apply_gravity(&mut self) {
         let size = (self.width * self.height) as usize;
-        let w = self.width as usize;
+        let w    = self.width as usize;
+        let pow  = &self.food;
 
-        // food IS already a flat power-source grid — no allocation needed
-        let pow = &self.food;
+        // to_fall: stack array (n ≤ 8 snakes), with explicit count
+        let mut to_fall     = [0usize; 8];
+        let mut to_fall_len = 0usize;
 
-        // snake_at: cell → snake index (u8::MAX = empty). Pre-allocated, cleared each iter.
-        let mut snake_at = vec![u8::MAX; size];
+        GRAV_SCRATCH.with(|cell| {
+            let mut g = cell.borrow_mut();
+            // snake_at: cell → snake index (u8::MAX = empty). TLS — no heap alloc after first call.
+            if g.len() < size { g.resize(size, u8::MAX); }
+            let snake_at = &mut g[..size];
 
-        loop {
-            // Rebuild snake_at for this iteration
-            snake_at.fill(u8::MAX);
-            for (idx, s) in self.snakes.iter().enumerate() {
-                s.body.iter().for_each(|&p| {
-                    if p.in_bounds(self.width, self.height) {
-                        snake_at[p.y as usize * w + p.x as usize] = idx as u8;
+            loop {
+                // Rebuild snake_at for this iteration
+                snake_at.fill(u8::MAX);
+                for (idx, s) in self.snakes.iter().enumerate() {
+                    s.body.iter().for_each(|&p| {
+                        if p.in_bounds(self.width, self.height) {
+                            snake_at[p.y as usize * w + p.x as usize] = idx as u8;
+                        }
+                    });
+                }
+
+                to_fall_len = 0;
+                for (idx, s) in self.snakes.iter().enumerate() {
+                    let grounded = s.body.iter().any(|&p| {
+                        let below_y = p.y + 1;
+                        if below_y >= self.height { return true; }
+                        if p.x < 0 || p.x >= self.width { return false; }
+                        let below_ci = below_y as usize * w + p.x as usize;
+                        if self.grid[below_ci] { return true; }
+                        if pow[below_ci]       { return true; }
+                        let sat = snake_at[below_ci];
+                        sat != u8::MAX && sat != idx as u8
+                    });
+                    if !grounded {
+                        to_fall[to_fall_len] = idx;
+                        to_fall_len += 1;
                     }
-                });
-            }
+                }
 
-            let mut to_fall: Vec<usize> = Vec::new();
-            for (idx, s) in self.snakes.iter().enumerate() {
-                let grounded = s.body.iter().any(|&p| {
-                    let below_y = p.y + 1;
-                    if below_y >= self.height { return true; }
-                    if p.x < 0 || p.x >= self.width { return false; }
-                    let below_ci = below_y as usize * w + p.x as usize;
-                    if self.grid[below_ci] { return true; }
-                    if pow[below_ci] { return true; }
-                    let sat = snake_at[below_ci];
-                    sat != u8::MAX && sat != idx as u8
-                });
-                if !grounded { to_fall.push(idx); }
+                if to_fall_len == 0 { break; }
+                for &idx in &to_fall[..to_fall_len] {
+                    self.snakes[idx].body.iter_mut().for_each(|p| p.y += 1);
+                }
             }
-
-            if to_fall.is_empty() { break; }
-            to_fall.iter().for_each(|&idx| {
-                self.snakes[idx].body.iter_mut().for_each(|p| p.y += 1);
-            });
-        }
+        });
     }
 
     // --------------------------------------------------------
@@ -317,15 +404,17 @@ impl GameState {
 
     /// Flat grid: each cell holds the snake index (in self.snakes) that occupies it,
     /// or u8::MAX if empty. Includes ALL body parts.
+    /// Snake-index grid — allocates. Prefer `with_snake_grid` in hot paths.
     pub fn snake_grid(&self) -> Vec<u8> {
         let mut g = vec![u8::MAX; (self.width * self.height) as usize];
-        for (idx, s) in self.snakes.iter().enumerate() {
+        let w = self.width as usize;
+        self.snakes.iter().enumerate().for_each(|(idx, s)| {
             s.body.iter().for_each(|&p| {
                 if p.in_bounds(self.width, self.height) {
-                    g[self.cell_idx(p)] = idx as u8;
+                    g[p.y as usize * w + p.x as usize] = idx as u8;
                 }
             });
-        }
+        });
         g
     }
 
@@ -333,8 +422,50 @@ impl GameState {
     // BFS utilities
     // --------------------------------------------------------
 
+    /// Zero-alloc variant: reuses OBS_SCRATCH thread-local buffer.
+    /// Passes a `&[bool]` obstacle grid to `f` without heap allocation.
+    /// Use this in hot paths; `build_obstacles()` for callers needing ownership.
+    pub fn with_obstacles<R>(&self, f: impl FnOnce(&[bool]) -> R) -> R {
+        let size = (self.width * self.height) as usize;
+        let w    = self.width as usize;
+        OBS_SCRATCH.with(|cell| {
+            let mut g = cell.borrow_mut();
+            if g.len() < size { g.resize(size, false); }
+            g[..size].fill(false);
+            self.snakes.iter().for_each(|s| {
+                s.body.iter().take(s.len().saturating_sub(1)).for_each(|&p| {
+                    if p.in_bounds(self.width, self.height) {
+                        g[p.y as usize * w + p.x as usize] = true;
+                    }
+                });
+            });
+            f(&g[..size])
+        })
+    }
+
+    /// Zero-alloc variant: reuses SNG_SCRATCH thread-local buffer.
+    /// Passes a `&[u8]` snake-index grid to `f` (u8::MAX = no snake).
+    pub fn with_snake_grid<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let size = (self.width * self.height) as usize;
+        SNG_SCRATCH.with(|cell| {
+            let mut g = cell.borrow_mut();
+            if g.len() < size { g.resize(size, u8::MAX); }
+            g[..size].fill(u8::MAX);
+            let w = self.width as usize;
+            self.snakes.iter().enumerate().for_each(|(idx, s)| {
+                s.body.iter().for_each(|&p| {
+                    if p.in_bounds(self.width, self.height) {
+                        g[p.y as usize * w + p.x as usize] = idx as u8;
+                    }
+                });
+            });
+            f(&g[..size])
+        })
+    }
+
     /// Obstacle set for pathfinding: all body parts except tails (which vacate).
-    /// Returns a flat bool grid (true = blocked).
+    /// Returns an owned flat bool grid (true = blocked).
+    /// Allocates — prefer `with_obstacles` in hot paths.
     pub fn build_obstacles(&self) -> Vec<bool> {
         let mut obs = vec![false; (self.width * self.height) as usize];
         let w = self.width as usize;
@@ -372,102 +503,121 @@ impl GameState {
     /// First direction from `start` toward any target, or None.
     /// `targets` and `obs` are flat bool grids (true = target / blocked).
     pub fn bfs_first_step(&self, start: Pos, targets: &[bool], obs: &[bool]) -> Option<Dir> {
-        let w = self.width as usize;
+        let w    = self.width as usize;
         let size = w * self.height as usize;
-        let mut first_dir = vec![u8::MAX; size];
-        let mut q: VecDeque<usize> = VecDeque::new();
         let dirs = Dir::all();
+        BFS_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_u8(size);
+            let first_dir = &mut sc.u8_buf[..size];
+            let queue     = &mut sc.queue;
+            first_dir.fill(u8::MAX);
+            queue.clear();
 
-        for (di, &d) in dirs.iter().enumerate() {
-            let (dx, dy) = d.delta();
-            let (nx, ny) = (start.x + dx, start.y + dy);
-            if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
-            let ni = ny as usize * w + nx as usize;
-            if self.grid[ni] || obs[ni] || first_dir[ni] != u8::MAX { continue; }
-            first_dir[ni] = di as u8;
-            if targets[ni] { return Some(d); }
-            q.push_back(ni);
-        }
-
-        while let Some(ci) = q.pop_front() {
-            let fd = first_dir[ci];
-            let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
-            for &d in &dirs {
+            for (di, &d) in dirs.iter().enumerate() {
                 let (dx, dy) = d.delta();
-                let (nx, ny) = (cx + dx, cy + dy);
+                let (nx, ny) = (start.x + dx, start.y + dy);
                 if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
                 let ni = ny as usize * w + nx as usize;
                 if self.grid[ni] || obs[ni] || first_dir[ni] != u8::MAX { continue; }
-                first_dir[ni] = fd;
-                if targets[ni] { return Some(dirs[fd as usize]); }
-                q.push_back(ni);
+                first_dir[ni] = di as u8;
+                if targets[ni] { return Some(d); }
+                queue.push_back(ni);
             }
-        }
-        None
+
+            while let Some(ci) = queue.pop_front() {
+                let fd = first_dir[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &d in &dirs {
+                    let (dx, dy) = d.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || obs[ni] || first_dir[ni] != u8::MAX { continue; }
+                    first_dir[ni] = fd;
+                    if targets[ni] { return Some(dirs[fd as usize]); }
+                    queue.push_back(ni);
+                }
+            }
+            None
+        })
     }
 
     /// BFS distance from `start` to the nearest target, or i32::MAX if unreachable.
     /// `targets` and `obs` are flat bool grids.
     pub fn bfs_dist(&self, start: Pos, targets: &[bool], obs: &[bool]) -> i32 {
-        let w = self.width as usize;
+        let w        = self.width as usize;
         let start_ci = start.y as usize * w + start.x as usize;
         if targets[start_ci] { return 0; }
-
         let size = w * self.height as usize;
-        let mut dist = vec![-1i32; size];
-        let mut q: VecDeque<usize> = VecDeque::new();
-        dist[start_ci] = 0;
-        q.push_back(start_ci);
-
         let dirs = Dir::all();
-        while let Some(ci) = q.pop_front() {
-            let d = dist[ci];
-            let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
-            for &dir in &dirs {
-                let (dx, dy) = dir.delta();
-                let (nx, ny) = (cx + dx, cy + dy);
-                if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
-                let ni = ny as usize * w + nx as usize;
-                if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
-                if targets[ni] { return d + 1; }
-                dist[ni] = d + 1;
-                q.push_back(ni);
+        BFS_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_i32(size);
+            let dist  = &mut sc.i32_buf[..size];
+            let queue = &mut sc.queue;
+            dist.fill(-1);
+            dist[start_ci] = 0;
+            queue.clear();
+            queue.push_back(start_ci);
+
+            while let Some(ci) = queue.pop_front() {
+                let d = dist[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &dirs {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
+                    if targets[ni] { return d + 1; }
+                    dist[ni] = d + 1;
+                    queue.push_back(ni);
+                }
             }
-        }
-        i32::MAX
+            i32::MAX
+        })
     }
 
     /// Gravity-aware BFS distance: intermediate cells must be statically grounded.
     /// Targets (food) are always reachable. `targets` doubles as the power-source
     /// grid for the grounding check (food = power source).
     pub fn bfs_dist_grounded(&self, start: Pos, targets: &[bool], obs: &[bool]) -> i32 {
-        let w = self.width as usize;
+        let w        = self.width as usize;
         let start_ci = start.y as usize * w + start.x as usize;
         if targets[start_ci] { return 0; }
-
         let size = w * self.height as usize;
-        let mut dist = vec![-1i32; size];
-        let mut q: VecDeque<usize> = VecDeque::new();
-        dist[start_ci] = 0;
-        q.push_back(start_ci);
-
         let dirs = Dir::all();
-        while let Some(ci) = q.pop_front() {
-            let d = dist[ci];
-            let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
-            for &dir in &dirs {
-                let (dx, dy) = dir.delta();
-                let (nx, ny) = (cx + dx, cy + dy);
-                if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
-                let ni = ny as usize * w + nx as usize;
-                if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
-                if targets[ni] { return d + 1; }
-                if !self.is_grounded_cell_ci(ni, w, targets) { continue; }
-                dist[ni] = d + 1;
-                q.push_back(ni);
+        BFS_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_i32(size);
+            let dist  = &mut sc.i32_buf[..size];
+            let queue = &mut sc.queue;
+            dist.fill(-1);
+            dist[start_ci] = 0;
+            queue.clear();
+            queue.push_back(start_ci);
+
+            while let Some(ci) = queue.pop_front() {
+                let d = dist[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &dirs {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
+                    if targets[ni] { return d + 1; }
+                    if !self.is_grounded_cell_ci(ni, w, targets) { continue; }
+                    dist[ni] = d + 1;
+                    queue.push_back(ni);
+                }
             }
-        }
-        i32::MAX
+            i32::MAX
+        })
     }
 
     /// Multi-source gravity-aware BFS from a set of starting positions (snake heads).
@@ -559,41 +709,48 @@ impl GameState {
     /// Gravity-aware first-step BFS. First step from start is unrestricted
     /// (snake body provides support); subsequent cells must be grounded.
     pub fn bfs_first_step_grounded(&self, start: Pos, targets: &[bool], obs: &[bool]) -> Option<Dir> {
-        let w = self.width as usize;
+        let w    = self.width as usize;
         let size = w * self.height as usize;
-        let mut first_dir = vec![u8::MAX; size];
-        let mut q: VecDeque<usize> = VecDeque::new();
         let dirs = Dir::all();
+        BFS_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_u8(size);
+            let first_dir = &mut sc.u8_buf[..size];
+            let queue     = &mut sc.queue;
+            first_dir.fill(u8::MAX);
+            queue.clear();
 
-        // First step: no grounding restriction
-        for (di, &d) in dirs.iter().enumerate() {
-            let (dx, dy) = d.delta();
-            let (nx, ny) = (start.x + dx, start.y + dy);
-            if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
-            let ni = ny as usize * w + nx as usize;
-            if self.grid[ni] || obs[ni] || first_dir[ni] != u8::MAX { continue; }
-            first_dir[ni] = di as u8;
-            if targets[ni] { return Some(d); }
-            q.push_back(ni);
-        }
-
-        // Subsequent steps: require grounding for non-target cells
-        while let Some(ci) = q.pop_front() {
-            let fd = first_dir[ci];
-            let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
-            for &d in &dirs {
+            // First step: no grounding restriction
+            for (di, &d) in dirs.iter().enumerate() {
                 let (dx, dy) = d.delta();
-                let (nx, ny) = (cx + dx, cy + dy);
+                let (nx, ny) = (start.x + dx, start.y + dy);
                 if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
                 let ni = ny as usize * w + nx as usize;
                 if self.grid[ni] || obs[ni] || first_dir[ni] != u8::MAX { continue; }
-                if !targets[ni] && !self.is_grounded_cell_ci(ni, w, targets) { continue; }
-                first_dir[ni] = fd;
-                if targets[ni] { return Some(dirs[fd as usize]); }
-                q.push_back(ni);
+                first_dir[ni] = di as u8;
+                if targets[ni] { return Some(d); }
+                queue.push_back(ni);
             }
-        }
-        None
+
+            // Subsequent steps: require grounding for non-target cells
+            while let Some(ci) = queue.pop_front() {
+                let fd = first_dir[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &d in &dirs {
+                    let (dx, dy) = d.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || obs[ni] || first_dir[ni] != u8::MAX { continue; }
+                    if !targets[ni] && !self.is_grounded_cell_ci(ni, w, targets) { continue; }
+                    first_dir[ni] = fd;
+                    if targets[ni] { return Some(dirs[fd as usize]); }
+                    queue.push_back(ni);
+                }
+            }
+            None
+        })
     }
 }
 

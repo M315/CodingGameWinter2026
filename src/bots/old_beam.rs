@@ -36,15 +36,17 @@ pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
     let my  = state.score(player) as i32;
     let opp = state.score(1 - player) as i32;
 
-    let obs = state.build_obstacles();
-    // state.food IS the power grid — pass directly, no allocation
-    let food_bonus: i32 = state.snakes.iter()
-        .filter(|s| s.player == player)
-        .map(|s| {
-            let d = state.bfs_dist(s.head(), &state.food, &obs);
-            if d == i32::MAX { -30 } else { 20 - d.min(20) }
-        })
-        .sum();
+    // with_obstacles reuses OBS_SCRATCH (TLS, zero-alloc).
+    // bfs_dist is called inside the closure with the same &[bool] — no nesting conflict.
+    let food_bonus: i32 = state.with_obstacles(|obs| {
+        state.snakes.iter()
+            .filter(|s| s.player == player)
+            .map(|s| {
+                let d = state.bfs_dist(s.head(), &state.food, obs);
+                if d == i32::MAX { -30 } else { 20 - d.min(20) }
+            })
+            .sum()
+    });
 
     my * 100 - opp * 80 + food_bonus
 }

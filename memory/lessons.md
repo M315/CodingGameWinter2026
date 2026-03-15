@@ -428,3 +428,295 @@ T2-A: BFS scratch buffers — eliminate Vec<i32>/Vec<bool> alloc per BFS call.
 Each heuristic_v1 call does N_my early-exit BFS, each allocating W×H Vec.
 Thread-local reusable buffers + generation counter would eliminate these allocs
 entirely. Expected 20-30% speed gain → more beam iterations → better decisions.
+
+---
+
+## 2026-03-15 — Open-border map redesign
+
+### What was done
+Rewrote maps 01–04 to match real competition map design (open borders, void gaps).
+Previously all four maps had full border walls — snakes couldn't fall off the edge.
+
+### New design rules (applied to all maps)
+- **No lateral/top walls**: edges are open `'.'`; snake heads that cross the boundary
+  are destroyed by border removal in `step()`.
+- **Ground platform with edge gaps**: ground spans `x=left_gap..width-right_gap`
+  (typically 2-cell gap left + right). Snakes near the edge fall to the bottom row
+  and can then walk off-map in one move.
+- **Interior stepping-stone platforms**: small `###` clusters at varying heights for
+  multi-level routing and gravity traps.
+- **Snake starting columns verified**: none of the start x positions coincide with
+  any interior platform cell (body would start inside `'#'`).
+
+### Map summary
+| Map | Size | Snakes/player | Ground y | Void gap x | Snakes land |
+|-----|------|--------------|----------|------------|-------------|
+| 01_default     | 20×15 | 1 | 11-12 | 0,1 and 18,19 | y=8,9,10 |
+| 02_small_multi | 16×12 | 2 |  9-10 | 0,1 and 14,15 | y=6,7,8  |
+| 03_wide        | 30×15 | 1 | 11-12 | 0-2 and 27-29 | y=8,9,10 |
+| 04_tall_multi  | 22×18 | 2 | 15-16 | 0,1 and 20,21 | y=12,13,14 |
+
+### Lessons
+- **Gravity grounding is "bottom edge OR platform below"**: snakes never
+  gravity-fall off the map — `below_y >= height` is always "grounded". Exit
+  requires an explicit horizontal move into an OOB cell.
+- **Platform overlap check**: for a snake body starting at y=1,2,3, check every
+  cell `(x, y)` in the initial body against the grid. Also trace the full fall path:
+  falling body cells pass through platform ROWS but must not land in platform CELLS.
+- **Parallel bench confirmed**: `std::thread::scope` + `&[String]` (Copy rebind)
+  gives ~3× wall-time speedup on 20-game bench with 4 threads.
+
+---
+
+## 2026-03-15 — T2-A/B/C: BFS scratch buffers + DirArr combo optimization
+
+### T2-A: Thread-local BFS scratch buffers — shipped
+
+**Problem**: every BFS call allocates 2 Vecs (dist: Vec<i32>, visited: Vec<u8>) + a
+VecDeque queue — ~3 allocs per call, ~3000 BFS calls/turn at beam width=120.
+
+**Solution**: `thread_local! { static BFS_SCRATCH: RefCell<BfsScratch> }` where
+`BfsScratch` holds reusable `i32_buf`, `u8_buf`, and `queue`. After `borrow_mut()`,
+field-borrow splitting works: `let dist = &mut sc.i32_buf[..size]; let queue = &mut sc.queue;`
+Both fields are accessible simultaneously through the single `&mut BfsScratch` reference.
+
+**Separate RefCells for separate statics**: `OBS_SCRATCH`, `SNG_SCRATCH`, `BFS_SCRATCH`
+are three independent `RefCell` statics, so nested borrows from different contexts
+never conflict.
+
+**Benchmark**: all-maps bench, 20 games, --time-limit 10, 4 threads
+| Before T2-A | After T2-A |
+|-------------|------------|
+| 5193ms      | 3327ms (1.56× speedup) |
+
+### T2-B: Closure-based build_obstacles / snake_grid — regression, reverted
+
+**Problem**: wanted to expose `with_obstacles(|obs| …)` closure API so callers could
+borrow TLS scratch without returning a Vec.
+
+**Result**: regression (3327ms → 4256ms). Root causes:
+1. Closure + `borrow_mut()` overhead outweighs malloc savings for 231-300 byte buffers.
+2. Making `build_obstacles()` delegate to `with_obstacles(|obs| obs.to_vec())` is WORSE
+   than direct calloc: TLS borrow + fill + malloc + memcpy > calloc + fill.
+
+**Lesson**: TLS scratch helps only when the caller owns the buffer across multiple
+operations (like BFS which uses it for the entire BFS traversal). A thin wrapper that
+immediately converts back to Vec has negative ROI.
+
+### T2-C: DirArr combo generation — shipped
+
+**Problem**: `gen_action_combos` returned `Vec<HashMap<u8,Dir>>`, allocating a new
+HashMap per combo (~27K allocs/turn on 3-snake maps).
+
+**Solution**:
+- `type DirArr = [Option<Dir>; 8]` — 8 bytes, `Copy`, zero heap.
+- `Option<Dir>` = 1 byte via niche (Dir has 4 variants, 252 spare patterns for None).
+- `gen_combos()` returns `Vec<DirArr>` — `let mut c = existing;` (Copy, no clone).
+- `greedy_dirmap()` returns `DirArr` instead of `HashMap<u8,Dir>`.
+- `dirmap_to_hashmap()` converts at output time only (once per turn).
+
+**Double iteration bug** (initial version): called `apply_dirs()` then `ns.step(&empty)`.
+`apply_dirs` set snake dirs; `step()` Phase 1 also iterated all snakes with `HashMap::get`
+(no-op with empty map but still one full snake scan). Result: 4238ms vs 3327ms T2-A.
+
+**Fix**: added `step_arr(&DirArr)` to `GameState` that handles Phase 1 inline with a
+direct array index, then calls private `step_phases_2_to_11()` shared with `step()`.
+`step()` calls `step_phases_2_to_11()` after its HashMap Phase 1. In `beam.rs`, two
+DirArrs (mine + opponent) are merged via:
+```rust
+fn merge_dirs(a: &DirArr, b: &DirArr) -> DirArr {
+    let mut out = *a;
+    for i in 0..8 { if out[i].is_none() { out[i] = b[i]; } }
+    out
+}
+```
+then `ns.step_arr(&merged)` — single pass, no HashMap, no double iteration.
+
+**Benchmark** (20 games, all maps, --time-limit 10, 4 threads):
+| T2-A baseline | T2-C (broken, double iter) | T2-C (step_arr fixed) |
+|---------------|---------------------------|----------------------|
+| 3327ms        | 4238ms (regression)       | 3595ms (~≈ T2-A) |
+
+Net result: T2-C's main benefit was eliminating HashMap allocs in combo generation;
+the step_arr fix recovers the double-iteration overhead but doesn't provide additional
+speedup over T2-A because the per-call cost of one extra O(n) snake scan is negligible
+vs the actual step body. The DirArr path is cleaner and avoids heap allocs — correct
+to keep.
+
+### Maps/quick directory created
+`maps/quick/` contains symlinks to 01–04 only. Use `--maps-dir maps/quick/` for fast
+iteration without the ~10s/game exotec map.
+
+### Next priority: see microbench session below.
+
+---
+
+## 2026-03-15 — Microbench: precise per-component cost breakdown
+
+### What was built
+`src/bin/microbench.rs` — single-threaded, fixed-state, fixed-depth benchmark.
+Measures each component in isolation on a real map position.
+Avoids game outcome noise, positional bias, and thread contention.
+Usage: `/tmp/mb maps/05_exotec_arena.txt`
+
+### Key design choices
+- `std::hint::black_box` prevents dead-code elimination
+- Warmup of 10% before timing
+- Fixed-depth beam (no time limit): measures work done, not budget allowed
+- Clone isolated separately to split "clone cost" from "step logic cost"
+- `BeamHashMapBot` added as benchmark control (same heuristic, old HashMap path)
+
+### Confounding lesson: old_beam vs beam comparison was wrong
+The initial "beam vs old_beam" game benchmark was confounded: beam uses `heuristic_v1`
+(gravity-aware BFS) while old_beam uses `old_heuristic` (plain BFS). old_heuristic wins
+on these maps because gravity-aware BFS is too conservative (marks food as unreachable
+when snake's own body would provide support). The structural difference (DirArr vs HashMap)
+was drowned by the heuristic quality difference. Always isolate one variable at a time.
+
+### Per-call measurements (exotec arena, 3 snakes/player, 27 combos)
+
+| Component | Old (HashMap) | New (DirArr) | Speedup |
+|---|---|---|---|
+| `gen_combos` / `gen_action_combos` | 2.56 µs | 0.40 µs | **6.4×** |
+| `greedy_dirmap` / `greedy_actions` | 0.34 µs | 0.28 µs | 1.2× |
+| `state.clone()` (isolated) | — | 0.20 µs | baseline |
+| `step` (includes clone) | 1.36 µs | 1.27 µs | 1.07× |
+| `heuristic_v1` | — | 0.34 µs | baseline |
+
+### Per-node cost breakdown (beam inner loop, DirArr path)
+One "node" = clone + step_arr + heuristic_v1 + amortised combo/greedy overhead.
+
+| Sub-cost | µs | % of node |
+|---|---|---|
+| step phases 2-11 (pure logic) | 1.07 | 67% |
+| heuristic_v1 | 0.34 | 21% |
+| state.clone() | 0.20 | 12% |
+| gen_combos (÷ 27 combos) | ~0.015 | <1% |
+| greedy_dirmap (÷ 27 combos) | ~0.010 | <1% |
+
+**Correction to prior estimate**: clone was previously estimated as the "dominant remaining
+cost". Microbench shows it's only 12% of per-node time. The real dominant cost is
+step phases 2-11 (67%), primarily `apply_gravity` + `body_cells` allocation inside step.
+
+### Fixed-depth beam speedup (DirArr vs HashMap, exotec)
+| Depth | DirArr (ms) | HashMap (ms) | Speedup |
+|---|---|---|---|
+| 1 | <1 | <1 | — |
+| 2 | 1 | 2 | 2× |
+| 3 | 9 | 9 | 1.0× |
+| 4 | 19 | 20 | 1.05× |
+| 5 | 31 | 28 | ~1× |
+
+DirArr's advantage concentrates in the first 1-2 depths (combo gen cost dominates there).
+By depth 3+ the beam is truncated to 120 nodes and the per-node clone+step+heuristic
+cost dominates — where DirArr provides only 1.07×.
+
+### Why the game benchmark showed 70% win rate at 5ms
+At 5ms budget, depth 1-2 is where most of the DirArr advantage lives. A bot that can
+consistently reach depth 2 reliably (DirArr) beats one that is often stuck at depth 1
+(HashMap). At 40ms both bots reach full depth 5-8, equalising.
+
+### Next targets (priority order)
+
+**T3-A — Stack arrays in step_phases_2_to_11** (quick win, low risk)
+`proposed: Vec<Pos>` → `[Pos; 8]`, `head_destroyed: vec![false; n]` → `[bool; 8]`,
+`should_remove: vec![false; n]` → `[bool; 8]`. Eliminates 3 small heap allocs per step.
+Expected saving: ~5-10% of step cost.
+
+**T3-B — TLS scratch for body_cells in step** (medium effort)
+`body_cells: vec![false; grid_size]` inside step_phases_2_to_11 allocates W×H = 231 bytes
+every step call. Make it TLS with a separate `BODY_SCRATCH` RefCell. Since step doesn't
+call BFS, there's no nesting conflict. Expected saving: ~10-15% of step cost.
+
+**T3-C — TLS scratch for snake_at in apply_gravity** (same effort as T3-B)
+`snake_at: Vec<u8>` in apply_gravity is allocated fresh per call. If gravity runs 2+ fixpoint
+iterations it's refilled (`.fill(u8::MAX)`) but the initial alloc is still wasted. TLS
+eliminates the alloc; `.fill` keeps the reset. Expected saving: ~5% of step cost.
+
+**Q1 — Body-aware BFS in heuristic_v1** (quality improvement)
+Current `bfs_dist_grounded` marks cells as unreachable if the path passes through air, even
+when the snake's own body segments provide support. This makes elevated food appear
+unreachable. Fix: include the snake's own body as a support source in the grounding
+check. Risk: changes heuristic behaviour — benchmark before/after.
+
+**T4 — Reversible step / undo-redo** (complex, 12% gain)
+Now that microbench shows clone is only 12% of node cost, the ROI is lower than
+originally estimated. Reversible step would save 0.20 µs per node = ~14% speedup.
+Complexity is high (undo stack for food changes, snake body deques, destroyed snakes).
+Deprioritised relative to T3-A/B/C which target the 67% step-logic cost more directly.
+
+---
+
+## 2026-03-15 — T3 optimizations + heuristic rollback + old_heuristic TLS
+
+### T3-A: Stack arrays in step_phases_2_to_11
+Replaced `proposed: Vec<Pos>`, `head_destroyed: vec![false; n]`, `should_remove: vec![false; n]`
+with fixed-size stack arrays `[Pos; 8]`, `[bool; 8]`, `[bool; 8]`. Eliminates 3 small heap
+allocs per step call. Quick win, minimal risk.
+
+### T3-B: TLS scratch for body_cells in step
+Added `STEP_SCRATCH: RefCell<Vec<bool>>` — reuses W×H obstacle grid across step calls.
+Avoids allocating 231 bytes every call. No nesting conflict: step doesn't call BFS.
+
+### T3-C: TLS scratch for snake_at in apply_gravity
+Added `GRAV_SCRATCH: RefCell<Vec<u8>>` — reuses W×H snake-index grid across gravity fixpoint
+iterations. Stack `to_fall: [usize; 8]` + explicit `to_fall_len` counter replaces the
+per-iteration `Vec<usize>` alloc.
+
+### Heuristic rollback: old_heuristic as main
+`heuristic_v1` uses `bfs_dist_grounded` which is too conservative — marks food as unreachable
+when path traverses air cells, even when the snake's own body provides support. On all test
+maps beam with `heuristic_v1` lost 97% of games to old_beam. Rolled `beam` alias back to
+`old_heuristic` (plain BFS, -30 unreachable penalty). old_beam and beam now use the same
+heuristic; old_beam is the HashMap-structure control.
+
+### Position bias lesson
+On exotec map, P1 wins 67–77% regardless of bot quality. Always run both P0→P1 AND P1→P0
+and average when comparing bots; or use microbench to avoid game-level confounders entirely.
+
+### old_heuristic: build_obstacles → with_obstacles (T3-D)
+`old_heuristic` called `build_obstacles()` which allocates a new `Vec<bool>` per call.
+Replaced with `with_obstacles(|obs| ...)` (TLS reuse, same `OBS_SCRATCH` already used by
+`bfs_first_step_grounded`). Result: 0.65 µs → 0.50 µs (23% faster). `bfs_dist` takes
+`&[bool]` so the signature is compatible with zero change to the BFS logic. No nesting
+conflict since `bfs_dist` reads obs but doesn't call `with_obstacles` again.
+
+### Updated microbench numbers (exotec, after all T3 changes)
+
+| Component | µs/call | Notes |
+|---|---|---|
+| `old_heuristic` | 0.50 | current main; was 0.65 before T3-D |
+| `heuristic_v1` | 0.36 | gravity-aware BFS; broken on these maps |
+| `gen_combos` (DirArr) | 0.41 | was 2.56 µs (HashMap) — 6.1× gain |
+| `greedy_dirmap` (DirArr) | 0.29 | vs 0.37 µs (HashMap) |
+| `state.clone()` | 0.24 | |
+| `step_arr` (DirArr+clone) | 1.07 | ~0.83 µs pure step logic |
+| `step` (HashMap+clone) | 1.06 | near parity after T3 alloc removal |
+
+### Per-node cost (DirArr beam, after T3)
+
+| Sub-cost | µs | % |
+|---|---|---|
+| step phases 2-11 (pure logic) | ~0.83 | 53% |
+| old_heuristic | 0.50 | 32% |
+| state.clone() | 0.24 | 15% |
+| combo/greedy overhead | <0.02 | <1% |
+
+**old_heuristic is now the dominant per-node cost (32%), overtaking step (53% combined).**
+Optimizing the heuristic further would have more impact than further step micro-tuning.
+
+### greedy_dirmap revert
+Changed `greedy_dirmap` to use plain `bfs_first_step` (not grounded) to match old greedy
+behaviour — this made it 0.54 µs (worse!). Reverted to `bfs_first_step_grounded`: 0.29 µs.
+Lesson: grounded BFS is faster because it prunes more cells, not because it's simpler.
+
+### Next priorities (updated)
+1. **Improve old_heuristic quality**: still uses plain BFS which ignores gravity constraints.
+   A gravity-aware variant that correctly uses the snake's own body as support would be more
+   accurate without the `bfs_dist_grounded` over-pruning bug. Biggest quality lever.
+2. **Heuristic: multi-food BFS**: compute distance to ALL food in a single BFS pass per snake
+   (BFS from head, collect all food hits) instead of BFS-to-nearest. Better for multi-food maps.
+3. **Beam width/horizon tuning**: step is now 27% faster than before T2/T3 changes. The 40ms
+   budget can now explore wider or deeper. Retest optimal width=120, horizon=8 settings.
+4. **T4 reversible step**: low ROI given 15% clone cost — defer unless other gains plateau.
+

@@ -27,6 +27,8 @@ pub trait Bot {
 /// Uses gravity-aware BFS so paths through open air are not considered.
 /// Standalone function so BeamSearchBot can call it without trait overhead.
 pub fn greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
+    // with_obstacles (OBS_SCRATCH) and bfs_first_step_grounded (BFS_SCRATCH)
+    // borrow independent TLS RefCells — no nesting conflict.
     let obs = state.build_obstacles();
     // state.food IS the power grid — pass directly, no allocation
     state.snakes.iter()
@@ -36,6 +38,88 @@ pub fn greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
                 .map(|d| (s.id, d))
         })
         .collect()
+}
+
+/// Convert a `DirArr` back to `HashMap<u8, Dir>` for the output of `choose_actions`.
+/// Only called once per turn (not in the hot loop).
+pub fn dirmap_to_hashmap(player: u8, arr: &DirArr) -> HashMap<u8, Dir> {
+    // We only need the moves for *our* snakes — the caller doesn't apply opponent dirs.
+    // But since we stored the full first combo in BeamItem, just emit everything set.
+    let _ = player; // reserved for future filtering
+    arr.iter().enumerate()
+        .filter_map(|(id, &opt)| opt.map(|d| (id as u8, d)))
+        .collect()
+}
+
+/// Zero-alloc action generators for the beam search hot path.
+///
+/// `DirArr` is `Copy` (8 bytes, stack-only) so combos need no `.clone()`.
+/// `gen_combos` / `greedy_dirmap` replace `gen_action_combos` / `greedy_actions`
+/// inside the beam inner loop to eliminate ~27K HashMap allocs/turn on 3-snake maps.
+
+/// Fast variant of `greedy_actions` returning a stack-allocated `DirArr`.
+/// Uses gravity-aware BFS — good for our own snakes (we plan grounded moves).
+pub fn greedy_dirmap(state: &GameState, player: u8) -> DirArr {
+    let obs = state.build_obstacles();
+    let mut result: DirArr = [None; 8];
+    state.snakes.iter()
+        .filter(|s| s.player == player)
+        .for_each(|s| {
+            if let Some(d) = state.bfs_first_step_grounded(s.head(), &state.food, &obs) {
+                result[s.id as usize] = Some(d);
+            }
+        });
+    result
+}
+
+/// Plain-BFS variant of `greedy_dirmap` — for opponent modelling.
+/// Matches `old_greedy_actions`: uses `bfs_first_step` (air-aware) + TLS obs buffer.
+/// Opponents CAN move through air and fall, so plain BFS is a more accurate model.
+pub fn old_greedy_dirmap(state: &GameState, player: u8) -> DirArr {
+    state.with_obstacles(|obs| {
+        let mut result: DirArr = [None; 8];
+        state.snakes.iter()
+            .filter(|s| s.player == player)
+            .for_each(|s| {
+                if let Some(d) = state.bfs_first_step(s.head(), &state.food, obs) {
+                    result[s.id as usize] = Some(d);
+                }
+            });
+        result
+    })
+}
+
+/// Fast variant of `gen_action_combos` returning `Vec<DirArr>` (no HashMap allocs).
+pub fn gen_combos(state: &GameState, player: u8) -> Vec<DirArr> {
+    let ids: Vec<u8> = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|s| s.id)
+        .collect();
+
+    if ids.is_empty() { return vec![[None; 8]]; }
+
+    let mut combos: Vec<DirArr> = vec![[None; 8]];
+    for id in ids {
+        let s = state.snakes.iter().find(|s| s.id == id).unwrap();
+        let neck = (s.len() >= 2).then(|| s.body[1]);
+        let dirs: Vec<Dir> = Dir::all().iter()
+            .filter(|&&d| {
+                let (dx, dy) = d.delta();
+                Some(s.head().translate(dx, dy)) != neck
+            })
+            .copied()
+            .collect();
+        let mut next = Vec::with_capacity(combos.len() * dirs.len());
+        for &existing in &combos {
+            for &d in &dirs {
+                let mut c = existing; // Copy — no clone
+                c[id as usize] = Some(d);
+                next.push(c);
+            }
+        }
+        combos = next;
+    }
+    combos
 }
 
 /// All valid direction combos for `player`'s snakes (U-turns pruned).

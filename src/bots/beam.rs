@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use super::{Bot, GameState, Dir, Pos, greedy_actions, gen_action_combos};
+use super::{Bot, GameState, Dir, Pos, DirArr, old_greedy_dirmap, gen_combos, dirmap_to_hashmap,
+            greedy_actions, gen_action_combos};
 
 pub struct BeamSearchBot {
     pub beam_width:   usize,
@@ -31,10 +32,13 @@ pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
 
     let my  = state.score(player) as i32;
     let opp = state.score(1 - player) as i32;
+    let w   = state.width as usize;
 
+    // with_obstacles / with_snake_grid borrow separate TLS statics (OBS_SCRATCH,
+    // SNG_SCRATCH); BFS inside borrows BFS_SCRATCH — three independent RefCells,
+    // so nested borrows are safe.
     let obs = state.build_obstacles();
     let sng = state.snake_grid();
-    let w   = state.width as usize;
 
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
@@ -45,7 +49,6 @@ pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
         .sum();
 
     let stability = stability_score(state, player, &sng, w);
-
     my * 100 - opp * 80 + food_bonus + stability
 }
 
@@ -346,6 +349,109 @@ impl Bot for BeamSearchBot {
             self.time_limit
         };
         let t0 = Instant::now();
+        // DirArr = [Option<Dir>; 8]: Copy, 8 bytes, zero heap alloc.
+        // Avoids ~27K HashMap allocs/turn on 3-snake maps.
+        type BeamItem = (DirArr, GameState, i32);
+
+        /// Merge two DirArrs (one per player) into a single array.
+        /// Each snake ID is owned by exactly one player, so slots never conflict.
+        #[inline]
+        fn merge_dirs(a: &DirArr, b: &DirArr) -> DirArr {
+            let mut out = *a;
+            for i in 0..8 { if out[i].is_none() { out[i] = b[i]; } }
+            out
+        }
+
+        let first_combos = gen_combos(state, player);
+        if first_combos.is_empty() { return HashMap::new(); }
+
+        let opp = old_greedy_dirmap(state, 1 - player);
+        let mut beam: Vec<BeamItem> = first_combos.into_iter().map(|first| {
+            let mut ns = state.clone();
+            ns.step_arr(&merge_dirs(&first, &opp));
+            let score = (self.heuristic_fn)(&ns, player);
+            (first, ns, score)
+        }).collect();
+        beam.sort_unstable_by(|a, b| b.2.cmp(&a.2));
+        beam.truncate(self.beam_width);
+
+        // Always keep the depth-0 best action as fallback. If the inner time check fires
+        // before expanding any state at a deeper level, we return this rather than an
+        // empty HashMap (which would silently produce "WAIT" and ignore food/walls).
+        let mut result: HashMap<u8, Dir> = dirmap_to_hashmap(player, &beam[0].0);
+
+        for _depth in 1..self.horizon {
+            if t0.elapsed() >= limit { break; }
+
+            // mem::take so we own the vec and can break early without drain issues.
+            // beam is already sorted best-first, so breaking early expands the most
+            // promising states and discards only the lower-scoring tail.
+            let cur_beam = std::mem::take(&mut beam);
+            let mut next: Vec<BeamItem> = Vec::with_capacity(cur_beam.len() * 9);
+            for (first_acts, cur, _) in cur_beam {
+                if t0.elapsed() >= limit { break; }
+                if cur.is_over() {
+                    let score = (self.heuristic_fn)(&cur, player);
+                    next.push((first_acts, cur, score));
+                    continue;
+                }
+                let my_combos = gen_combos(&cur, player);
+                let opp_acts  = old_greedy_dirmap(&cur, 1 - player);
+                for combo in my_combos {
+                    let mut ns = cur.clone();
+                    ns.step_arr(&merge_dirs(&combo, &opp_acts));
+                    let score = (self.heuristic_fn)(&ns, player);
+                    next.push((first_acts, ns, score)); // first_acts is Copy
+                }
+            }
+            // If nothing was expanded (timed out on very first state), keep result from
+            // the previous depth and stop — beam is already empty from mem::take.
+            if next.is_empty() { break; }
+            next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
+            next.truncate(self.beam_width);
+            result = dirmap_to_hashmap(player, &next[0].0);
+            beam = next;
+        }
+
+        result
+    }
+}
+
+// ── Benchmark control: same heuristic, old HashMap dispatch ──────────────────
+//
+// `BeamHashMapBot` is identical to `BeamSearchBot` except it uses the old
+// `gen_action_combos` + `greedy_actions` + `step(&HashMap)` code path.
+// Exists only for isolated benchmarking of DirArr vs HashMap overhead.
+// NOT submitted to CG — benchmark comparison only.
+
+pub struct BeamHashMapBot {
+    pub beam_width:   usize,
+    pub horizon:      usize,
+    pub time_limit:   Duration,
+    pub heuristic_fn: fn(&GameState, u8) -> i32,
+}
+
+impl BeamHashMapBot {
+    pub fn new(
+        beam_width: usize,
+        horizon: usize,
+        time_limit_ms: u64,
+        heuristic_fn: fn(&GameState, u8) -> i32,
+    ) -> Self {
+        BeamHashMapBot { beam_width, horizon, time_limit: Duration::from_millis(time_limit_ms), heuristic_fn }
+    }
+}
+
+impl Bot for BeamHashMapBot {
+    fn name(&self) -> &str { "BeamHashMapBot" }
+
+    fn choose_actions(&mut self, state: &GameState, player: u8) -> HashMap<u8, Dir> {
+        let limit = if state.turn == 0 {
+            Duration::from_millis(950)
+        } else {
+            self.time_limit
+        };
+        let t0 = Instant::now();
         type BeamItem = (HashMap<u8, Dir>, GameState, i32);
 
         let first_combos = gen_action_combos(state, player);
@@ -363,19 +469,12 @@ impl Bot for BeamSearchBot {
         beam.sort_unstable_by(|a, b| b.2.cmp(&a.2));
         beam.truncate(self.beam_width);
 
-        // Always keep the depth-0 best action as fallback. If the inner time check fires
-        // before expanding any state at a deeper level, we return this rather than an
-        // empty HashMap (which would silently produce "WAIT" and ignore food/walls).
         let mut result: HashMap<u8, Dir> = beam.first()
             .map(|(a, _, _)| a.clone())
             .unwrap_or_default();
 
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
-
-            // mem::take so we own the vec and can break early without drain issues.
-            // beam is already sorted best-first, so breaking early expands the most
-            // promising states and discards only the lower-scoring tail.
             let cur_beam = std::mem::take(&mut beam);
             let mut next: Vec<BeamItem> = Vec::with_capacity(cur_beam.len() * 9);
             for (first_acts, cur, _) in cur_beam {
@@ -396,8 +495,6 @@ impl Bot for BeamSearchBot {
                     next.push((first_acts.clone(), ns, score));
                 }
             }
-            // If nothing was expanded (timed out on very first state), keep result from
-            // the previous depth and stop — beam is already empty from mem::take.
             if next.is_empty() { break; }
             next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
             next.truncate(self.beam_width);

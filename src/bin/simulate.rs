@@ -54,16 +54,20 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
     match name {
         "wait"     => Box::new(WaitBot),
         "greedy"   => Box::new(GreedyBot),
-        // `beam` = latest heuristic. `beam_vN` = permanent versioned alias.
-        "beam"     => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
-        "beam_v1"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
-        "beam_v2"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v2)),
-        "beam_v3"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v3)),
-        "beam_v4"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v4)),
-        "old_beam" => Box::new(OldBeamSearchBot::new(120, 8, time_limit_ms)),
-        "mcts"     => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
+        // `beam` = fast structure (DirArr + TLS scratch) with old_heuristic (plain BFS).
+        // old_heuristic is proven better than heuristic_v1 on open-border maps.
+        // `beam_vN` = permanent versioned aliases.
+        "beam"          => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, old_heuristic)),
+        "beam_v1"       => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
+        "beam_v2"       => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v2)),
+        "beam_v3"       => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v3)),
+        "beam_v4"       => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v4)),
+        "old_beam"      => Box::new(OldBeamSearchBot::new(120, 8, time_limit_ms)),
+        // Same heuristic as old beam_v1 but uses gen_action_combos + step(&HashMap) — benchmark only.
+        "beam_hashmap"  => Box::new(BeamHashMapBot::new(120, 8, time_limit_ms, heuristic_v1)),
+        "mcts"          => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
         _ => {
-            eprintln!("Unknown bot '{}'. Available: wait | greedy | beam | beam_v1 | old_beam | mcts", name);
+            eprintln!("Unknown bot '{}'. Available: wait | greedy | beam | beam_v1 | beam_hashmap | old_beam | mcts", name);
             std::process::exit(1);
         }
     }
