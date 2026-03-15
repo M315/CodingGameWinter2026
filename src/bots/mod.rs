@@ -6,6 +6,7 @@ pub mod wait;
 pub mod greedy;
 pub mod beam;
 pub mod old_beam;
+pub mod mcts;
 
 // ============================================================
 // Bot trait

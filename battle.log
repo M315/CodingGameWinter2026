@@ -1,0 +1,14 @@
+thread 'main' panicked at /tmp/answer.rs:260:33:
+index out of bounds: the len is 264 but the index is 266
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/std/src/panicking.rs:697:5
+   1: core::panicking::panic_fmt
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/panicking.rs:75:14
+   2: core::panicking::panic_bounds_check
+             at /rustc/1159e78c4747b02ef996e55082b704c09b970588/library/core/src/panicking.rs:280:5
+   3: answer::GameState::step
+   4: <core::iter::adapters::map::Map<I,F> as core::iter::traits::iterator::Iterator>::fold
+   5: alloc::vec::in_place_collect::<impl alloc::vec::spec_from_iter::SpecFromIter<T,I> for alloc::vec::Vec<T>>::from_iter
+   6: <answer::OldBeamSearchBot as answer::Bot>::choose_actions
+   7: answer::main

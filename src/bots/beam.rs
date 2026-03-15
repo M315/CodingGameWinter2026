@@ -3,23 +3,30 @@ use std::time::{Duration, Instant};
 use super::{Bot, GameState, Dir, greedy_actions, gen_action_combos};
 
 pub struct BeamSearchBot {
-    pub beam_width: usize,
-    pub horizon:    usize,
-    pub time_limit: Duration,
+    pub beam_width:   usize,
+    pub horizon:      usize,
+    pub time_limit:   Duration,
+    pub heuristic_fn: fn(&GameState, u8) -> i32,
 }
 
 impl BeamSearchBot {
-    pub fn new(beam_width: usize, horizon: usize, time_limit_ms: u64) -> Self {
+    pub fn new(
+        beam_width: usize,
+        horizon: usize,
+        time_limit_ms: u64,
+        heuristic_fn: fn(&GameState, u8) -> i32,
+    ) -> Self {
         BeamSearchBot {
             beam_width,
             horizon,
             time_limit: Duration::from_millis(time_limit_ms),
+            heuristic_fn,
         }
     }
 }
 
-/// Heuristic score for `player` in `state`. Higher = better for player.
-pub fn heuristic(state: &GameState, player: u8) -> i32 {
+/// V1 heuristic: score delta + gravity-aware food distance + stability penalty.
+pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
     if !state.snakes_alive(player) { return i32::MIN / 2; }
 
     let my  = state.score(player) as i32;
@@ -82,7 +89,7 @@ impl Bot for BeamSearchBot {
             for (&k, &v) in &opp { combined.entry(k).or_insert(v); }
             let mut ns = state.clone();
             ns.step(&combined);
-            let score = heuristic(&ns, player);
+            let score = (self.heuristic_fn)(&ns, player);
             (first, ns, score)
         }).collect();
         beam.sort_unstable_by(|a, b| b.2.cmp(&a.2));
@@ -106,7 +113,7 @@ impl Bot for BeamSearchBot {
             for (first_acts, cur, _) in cur_beam {
                 if t0.elapsed() >= limit { break; }
                 if cur.is_over() {
-                    let score = heuristic(&cur, player);
+                    let score = (self.heuristic_fn)(&cur, player);
                     next.push((first_acts, cur, score));
                     continue;
                 }
@@ -117,7 +124,7 @@ impl Bot for BeamSearchBot {
                     for (&k, &v) in &opp_acts { combined.entry(k).or_insert(v); }
                     let mut ns = cur.clone();
                     ns.step(&combined);
-                    let score = heuristic(&ns, player);
+                    let score = (self.heuristic_fn)(&ns, player);
                     next.push((first_acts.clone(), ns, score));
                 }
             }

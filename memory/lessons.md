@@ -254,3 +254,52 @@ Three directions identified for further speedup:
 - [ ] Transposition table: Zobrist hash → cached (depth, score).
 - [ ] Improve heuristic for flat maps: gravity-aware BFS is too conservative when
       snake body itself provides support (known limitation from 2026-03-14).
+
+---
+
+## 2026-03-15 — MCTS exploration + strategy decision
+
+### What was investigated
+- Explored MCTS as an alternative to beam search.
+- Reference repo (tczajka/wazir-drop) turned out to be alpha-beta + NNUE (not MCTS),
+  but provided useful time-management patterns (hard/soft deadlines, iterative deepening).
+- Implemented a full MCTS bot (`src/bots/mcts.rs`) with:
+  - Arena-based flat Vec<MctsNode> tree (no per-node heap allocation)
+  - DUCT (Decoupled UCT) for simultaneous multi-player moves
+  - Greedy rollout × depth-6 + heuristic leaf evaluation (sigmoid-normalized)
+  - Turn-0 extended budget (950ms), 50k node cap, time-check every 128 iters
+
+### Benchmark results
+| Matchup | Result |
+|---|---|
+| MCTS vs Greedy (default map, 10g) | MCTS 100% |
+| MCTS vs Beam (default map, 10g) | 100% draws (both optimal on symmetric map) |
+| MCTS vs Beam (exotec arena, 10g) | Beam 100% |
+
+### Why MCTS underperforms on multi-snake maps
+- With 3 snakes per player: 27 my_combos × 27 op_combos = 729 joint actions/turn.
+- With ~4000 nodes/turn budget, tree barely reaches depth 1 (729 pairs at depth 1).
+- `nodes == iters` always: every iteration creates 1 new node, UCB never revisits.
+- Beam search reaches depth 8 with width 120 — far more signal per time budget.
+
+### Why MCTS+NN is not worth pursuing here
+- Good hand-crafted heuristic already exists → MCTS rollout substitution not needed.
+- Game is deterministic → no averaging benefit over beam.
+- NN needs self-play training infra + weeks of iteration — overkill for contest.
+- Modifications needed (greedy opponent, progressive widening, heuristic leaf, subtree
+  reuse) converge toward reinventing beam search with UCB selection.
+
+### Decision
+Shelve MCTS. Focus on beam search with better heuristics and performance.
+See `memory/plan.md` for the prioritized improvement roadmap.
+
+### Lessons
+- **MCTS suits domains where eval function is hard**: Go, Hex, stochastic games.
+  When a good heuristic exists + game is deterministic, beam/AB dominates.
+- **Branching factor kills MCTS**: 27^3 = 19k nodes at depth 3. With 4k budget
+  you never get past depth 1–2 on multi-snake maps.
+- **DUCT is theoretically correct for simultaneous games** but practically unusable
+  here due to (my_combos × op_combos) explosion. Greedy opponent assumption
+  (same as beam) is the right practical choice.
+- **Arena-based MCTS implementation is clean in Rust**: flat Vec<Node> with usize
+  indices avoids all borrow-checker issues with tree traversal.

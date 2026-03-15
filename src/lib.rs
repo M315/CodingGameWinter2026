@@ -5,4 +5,11 @@ pub mod game;
 pub use game::*;
 
 // Bot infrastructure and all implementations
-pub use bots::{beam::BeamSearchBot, greedy::GreedyBot, old_beam::OldBeamSearchBot, wait::WaitBot, Bot};
+pub use bots::{
+    beam::{heuristic_v1, BeamSearchBot},
+    greedy::GreedyBot,
+    mcts::MctsBot,
+    old_beam::OldBeamSearchBot,
+    wait::WaitBot,
+    Bot,
+};

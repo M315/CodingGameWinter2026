@@ -8,7 +8,13 @@
 ///   cargo run --bin simulate -- --map path/to/map.txt
 ///   cargo run --bin simulate -- --p0 beam --p1 old_beam --bench 50 --time-limit 10
 ///
-/// Available bots: wait | greedy | beam | old_beam
+/// Available bots: wait | greedy | beam | beam_v1 | old_beam | mcts
+///
+/// Heuristic versioning protocol:
+///   • `beam`      always points to the LATEST heuristic
+///   • `beam_vN`   is a permanent alias for heuristic version N
+///   • To compare versions: --p0 beam --p1 beam_v1
+///   • Before adding a new heuristic: git tag heuristic-vN
 ///
 /// --time-limit <ms>  Per-turn budget for all beam bots (default: 40).
 ///                    Lower values make benchmarks faster while preserving
@@ -27,10 +33,13 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
     match name {
         "wait"     => Box::new(WaitBot),
         "greedy"   => Box::new(GreedyBot),
-        "beam"     => Box::new(BeamSearchBot::new(120, 8, time_limit_ms)),
+        // `beam` = latest heuristic. `beam_vN` = permanent versioned alias.
+        "beam"     => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
+        "beam_v1"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
         "old_beam" => Box::new(OldBeamSearchBot::new(120, 8, time_limit_ms)),
+        "mcts"     => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
         _ => {
-            eprintln!("Unknown bot '{}'. Available: wait | greedy | beam | old_beam", name);
+            eprintln!("Unknown bot '{}'. Available: wait | greedy | beam | beam_v1 | old_beam | mcts", name);
             std::process::exit(1);
         }
     }
