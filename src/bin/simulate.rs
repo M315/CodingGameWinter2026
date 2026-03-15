@@ -153,17 +153,17 @@ fn main() {
 
     struct GameResult { game_n: usize, s0: usize, s1: usize, turn: u32 }
 
-    let chunk_size = bench.div_ceil(jobs);
     // Rebind as slice references so the `move` closures below copy the pointer,
     // not the owned Vec/String — thread::scope guarantees these outlive the threads.
     let pool: &[String] = &pool;
     let mut results: Vec<GameResult> = thread::scope(|s| {
         let handles: Vec<_> = (0..jobs)
             .map(|worker| {
-                let start = worker * chunk_size;
-                let end   = (start + chunk_size).min(bench);
+                // Interleave game indices across workers (worker gets 0,J,2J,… or 1,J+1,2J+1,…)
+                // so expensive maps (e.g. exotec every 5th game) are spread evenly rather than
+                // clustering in one thread's contiguous chunk.
                 s.spawn(move || {
-                    (start..end).map(|game_n| {
+                    (worker..bench).step_by(jobs).map(|game_n| {
                         let map_str = &pool[game_n % pool.len()];
                         let mut state = build_state_from_map(map_str);
                         // Skip 950ms first-turn bonus — distorts timings without affecting win rates.
