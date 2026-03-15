@@ -332,6 +332,57 @@ See `memory/plan.md` for the prioritized improvement roadmap.
 - [ ] T2-C: combo pruning (expand top-K combos per node, not all 27)
 - [ ] T2-B: territory / flood-fill liberty count
 
+---
+
+## 2026-03-15 — heuristic_v2/v3 food competition — null result, reverted to v1
+
+### What was tried
+- **v2**: competitive food scoring + greedy friendly assignment using per-snake
+  `bfs_dist_map_grounded` calls (N_my + N_op full BFS maps per evaluation).
+- **v3**: same logic but replaced per-snake BFS with 2 `bfs_multisource_dist_map`
+  calls — one per team. Intended to be faster than even v1.
+
+### Benchmark results (exotec arena, 50 games, --time-limit 40)
+| Matchup | P0 wins | P1 wins | Draws |
+|---|---|---|---|
+| v2 (P0) vs v1 (P1) | 36% | 54% | 10% |
+| v3 (P0) vs v1 (P1) | 46% | 46% |  8% |
+| v1 (P0) vs v1 (P1) | 45% | 35% | 20% (baseline) |
+
+v2 was a clear regression (6 slow BFS calls per evaluation → fewer beam iterations).
+v3 recovered performance but still lost: P0 advantage is ~10pp so 46% as P0 = ~9pp below v1.
+At 200ms (generous budget): v3 loses 0/20, v1 wins 20/20 — confirms v3 slightly worse.
+
+### Root cause (key lesson)
+**Beam search already captures food competition implicitly.** The greedy-opponent
+simulation inside beam search steps the opponent toward food each turn; the
+`score_delta` at the leaf already reflects who ends up with more food. Adding
+an explicit "who wins the race" term at the leaf **double-counts** information
+the search already has. At shallow depth (5ms) it helps marginally; at beam's
+normal depth (8 steps / 40ms) it adds noise.
+
+### When competition signal WOULD help
+Only at depths beyond beam's horizon (>8 turns ahead) where the leaf can't yet
+"see" who wins a specific food race. That requires either deeper search or a
+learned value function trained on outcomes.
+
+### What was learned about the benchmarking process
+- **20 games is not enough** on the exotec arena: v2 showed 60/30 at 20g but
+  reversed to 36/54 at 50g. Always run ≥50 games before drawing conclusions.
+- **Test at multiple time limits**: the 5ms / 40ms / 200ms trifecta diagnoses
+  whether a regression is a signal problem or a performance problem cleanly.
+  - 5ms equal + 200ms regression → performance is the bottleneck
+  - 5ms equal + 40ms equal + 200ms regression → signal misleads at depth
+- **Account for P0/P1 map bias** when interpreting results: this map has ~10pp
+  P0 advantage even with identical bots. Always run a v1 vs v1 baseline.
+- **Update lessons BEFORE committing**, not after.
+
+### Plan update
+T1-A food competition approach shelved. Moving to:
+- T2-B: territory / flood-fill liberty count — a signal beam CAN'T see implicitly
+  (reachable cells from head), not redundant with greedy-opponent simulation.
+- T2-A: BFS scratch buffers (perf, safe win regardless of signal quality).
+
 ### Lessons
 - **MCTS suits domains where eval function is hard**: Go, Hex, stochastic games.
   When a good heuristic exists + game is deterministic, beam/AB dominates.
