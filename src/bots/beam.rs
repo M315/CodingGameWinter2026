@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use super::{Bot, GameState, Dir, greedy_actions, gen_action_combos};
+use super::{Bot, GameState, Dir, Pos, greedy_actions, gen_action_combos};
 
 pub struct BeamSearchBot {
     pub beam_width:   usize,
@@ -173,6 +173,99 @@ pub fn heuristic_v2(state: &GameState, player: u8) -> i32 {
                     // Opponent wins — we'll arrive too late, wasted effort.
                     -15
                 }
+            }
+        }
+    }).sum();
+
+    score_delta + food_score + stability
+}
+
+/// V3 heuristic: same logic as v2 but using multi-source BFS.
+///
+/// v2 ran N_my + N_op per-snake BFS calls (up to 6 on exotec).
+/// v3 replaces them with exactly 2 multi-source calls — one per team.
+/// This is faster than even v1 (which ran N_my early-exit calls),
+/// freeing beam iterations to search deeper for the same 40ms budget.
+///
+/// Assignment approximation: the multi-source BFS records which of my
+/// snakes is CLOSEST to each cell.  Greedy sort by distance then assigns
+/// each food to that snake, skipping conflicts.  Ties in the BFS
+/// initialisation order break in favour of the snake listed first, which
+/// is an acceptable approximation — exact assignment needs per-snake BFS
+/// (v2) but is too expensive at beam scale.
+pub fn heuristic_v3(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let score_delta = state.score(player) as i32 * 100
+                    - state.score(1 - player) as i32 * 80;
+
+    let obs = state.build_obstacles();
+    let sng = state.snake_grid();
+    let w   = state.width as usize;
+
+    let stability = stability_score(state, player, &sng, w);
+
+    let food_cis: Vec<usize> = state.food.iter().enumerate()
+        .filter(|(_, &b)| b)
+        .map(|(ci, _)| ci)
+        .collect();
+
+    if food_cis.is_empty() {
+        return score_delta + stability;
+    }
+
+    // Collect head positions for each team.
+    let my_heads: Vec<Pos> = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|s| s.head())
+        .collect();
+    let op_heads: Vec<Pos> = state.snakes.iter()
+        .filter(|s| s.player != player)
+        .map(|s| s.head())
+        .collect();
+
+    let n_my = my_heads.len();
+
+    // Two BFS calls total (vs N_my + N_op in v2, N_my in v1).
+    let (my_dist, my_src) = state.bfs_multisource_dist_map(&my_heads, &state.food, &obs);
+    let (op_dist, _)      = state.bfs_multisource_dist_map(&op_heads, &state.food, &obs);
+
+    // Greedy assignment: sort foods by my team's distance, claim each food
+    // for the snake that reaches it first (my_src).  A snake already claimed
+    // for a closer food is skipped — it naturally yields this one.
+    let mut snake_food: Vec<Option<(usize, i32)>> = vec![None; n_my];
+    let mut food_assigned = vec![false; food_cis.len()];
+
+    let mut sorted: Vec<(usize, usize, i32)> = // (food_idx, snake_idx, dist)
+        food_cis.iter().enumerate()
+            .filter_map(|(fi, &ci)| {
+                let d = my_dist[ci];
+                let s = my_src[ci];
+                if d >= 0 && s != u8::MAX { Some((fi, s as usize, d)) } else { None }
+            })
+            .collect();
+    sorted.sort_unstable_by_key(|&(_, _, d)| d);
+
+    for (fi, si, d) in sorted {
+        if food_assigned[fi] || snake_food[si].is_some() { continue; }
+        food_assigned[fi]  = true;
+        snake_food[si]     = Some((fi, d));
+    }
+
+    // Score each of my snakes on its assigned food + competitive standing.
+    let food_score: i32 = (0..n_my).map(|si| {
+        match snake_food[si] {
+            None => -50,
+            Some((fi, my_d)) => {
+                let op_d = {
+                    let d = op_dist[food_cis[fi]];
+                    if d < 0 { i32::MAX } else { d }
+                };
+                let proximity = 20 - my_d.min(20);
+                if      op_d == i32::MAX { proximity + 20 }   // uncontested
+                else if my_d < op_d      { proximity + 10 }   // winning
+                else if my_d == op_d     { proximity -  5 }   // tied
+                else                     { -15             }   // losing
             }
         }
     }).sum();

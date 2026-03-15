@@ -9,7 +9,7 @@ doesn't regress. Exotec arena is the primary test map (3 snakes/player, platform
 
 ## Tier 1 — Highest ROI
 
-### T1-A: Food competition heuristic
+### ✅ T1-A: Food competition heuristic — DONE (heuristic-v2, 2026-03-15)
 **What**: penalise food items that the opponent reaches faster than us.
 For each food cell: compute `my_dist` and `opp_dist` via BFS.
 If `opp_dist < my_dist`: apply a penalty scaled by the advantage.

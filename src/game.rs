@@ -470,6 +470,56 @@ impl GameState {
         i32::MAX
     }
 
+    /// Multi-source gravity-aware BFS from a set of starting positions (snake heads).
+    /// Returns `(dist, source)` flat grids:
+    ///   dist[ci]   = minimum distance from any start to cell ci  (-1 = unreachable)
+    ///   source[ci] = index into `starts` of the closest start    (u8::MAX = unreachable)
+    ///
+    /// Initialising all starts simultaneously means a single pass gives us both
+    /// "which team snake is closest" and "what distance" for every food cell —
+    /// replacing N separate per-snake BFS calls with one.
+    pub fn bfs_multisource_dist_map(
+        &self,
+        starts:  &[Pos],
+        targets: &[bool],
+        obs:     &[bool],
+    ) -> (Vec<i32>, Vec<u8>) {
+        let w    = self.width as usize;
+        let size = w * self.height as usize;
+
+        let mut dist   = vec![-1i32;    size];
+        let mut source = vec![u8::MAX;  size];
+        let mut q: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+
+        for (si, &start) in starts.iter().enumerate() {
+            if !start.in_bounds(self.width, self.height) { continue; }
+            let ci = start.y as usize * w + start.x as usize;
+            if dist[ci] != -1 { continue; } // two heads on same cell
+            dist[ci]   = 0;
+            source[ci] = si as u8;
+            q.push_back(ci);
+        }
+
+        let dirs = Dir::all();
+        while let Some(ci) = q.pop_front() {
+            let d   = dist[ci];
+            let src = source[ci];
+            let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+            for &dir in &dirs {
+                let (dx, dy) = dir.delta();
+                let (nx, ny) = (cx + dx, cy + dy);
+                if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                let ni = ny as usize * w + nx as usize;
+                if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
+                if !targets[ni] && !self.is_grounded_cell_ci(ni, w, targets) { continue; }
+                dist[ni]   = d + 1;
+                source[ni] = src;
+                q.push_back(ni);
+            }
+        }
+        (dist, source)
+    }
+
     /// Full gravity-aware distance map from `start`.
     /// Returns a flat Vec<i32> where dist[ci] is the BFS distance to cell ci,
     /// or -1 if unreachable under the gravity-aware rules.

@@ -293,6 +293,45 @@ Three directions identified for further speedup:
 Shelve MCTS. Focus on beam search with better heuristics and performance.
 See `memory/plan.md` for the prioritized improvement roadmap.
 
+---
+
+## 2026-03-15 — heuristic_v2: food competition + friendly assignment
+
+### What was built
+- `bfs_dist_map_grounded()` in `game.rs`: full-grid BFS returning `Vec<i32>`;
+  one call per snake covers all food distances, no repeated per-food BFS calls.
+- `heuristic_v2()` in `bots/beam.rs`:
+  - Greedy food assignment (sort triples by dist, claim greedily):
+    each food goes to the closest friendly snake; a snake with a nearer
+    alternative elsewhere yields the contested item automatically.
+  - Competitive scoring per food: +20 uncontested, +10 winning race,
+    -5 tied, -15 losing, -50 no food reachable.
+  - `stability_score()` extracted as a shared helper.
+- Heuristic versioning protocol in place: `beam` = latest, `beam_vN` = pinned alias.
+  Git tags `heuristic-v1` and `heuristic-v2` mark each version.
+
+### Benchmark results
+| Map | v2 vs v1 (20g, time-limit 40) |
+|---|---|
+| Default (flat, 1 snake/player) | 20 draws — no regression |
+| Exotec arena (3 snakes/player) | **v2 60% / v1 30% / draws 10%** |
+
+### Lessons
+- **Food competition is the biggest blind spot in v1**: the bot was chasing food the
+  opponent would reach first, wasting turns. Competitive scoring fixed this.
+- **Greedy assignment handles friendly coordination as a free by-product**: sorting
+  (snake, food, dist) triples means a snake with a closer alternative naturally
+  yields contested food — no special tie-break logic required.
+- **`flat_map` with nested closures fights the borrow checker**: `move` in the inner
+  closure tries to move `dist_my` out of the outer closure. Fix: plain `for` loops.
+- **No regression on flat maps**: v2 draws v1 on the symmetric map — the new terms
+  don't hurt when there's no multi-snake competition.
+
+### Next steps (from plan.md)
+- [ ] T2-A: thread-local BFS scratch buffers (eliminate Vec alloc per BFS call)
+- [ ] T2-C: combo pruning (expand top-K combos per node, not all 27)
+- [ ] T2-B: territory / flood-fill liberty count
+
 ### Lessons
 - **MCTS suits domains where eval function is hard**: Go, Hex, stochastic games.
   When a good heuristic exists + game is deterministic, beam/AB dominates.

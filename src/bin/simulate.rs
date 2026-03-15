@@ -8,7 +8,7 @@
 ///   cargo run --bin simulate -- --map path/to/map.txt
 ///   cargo run --bin simulate -- --p0 beam --p1 old_beam --bench 50 --time-limit 10
 ///
-/// Available bots: wait | greedy | beam | beam_v1 | beam_v2 | old_beam | mcts
+/// Available bots: wait | greedy | beam | beam_v1 | beam_v2 | beam_v3 | old_beam | mcts
 ///
 /// Heuristic versioning protocol:
 ///   • `beam`      always points to the LATEST heuristic
@@ -34,9 +34,10 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
         "wait"     => Box::new(WaitBot),
         "greedy"   => Box::new(GreedyBot),
         // `beam` = latest heuristic. `beam_vN` = permanent versioned alias.
-        "beam"     => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v2)),
+        "beam"     => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
         "beam_v1"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v1)),
         "beam_v2"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v2)),
+        "beam_v3"  => Box::new(BeamSearchBot::new(120, 8, time_limit_ms, heuristic_v3)),
         "old_beam" => Box::new(OldBeamSearchBot::new(120, 8, time_limit_ms)),
         "mcts"     => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
         _ => {
