@@ -32,12 +32,10 @@ pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
     let my  = state.score(player) as i32;
     let opp = state.score(1 - player) as i32;
 
-    // state.food IS the power grid — no allocation needed for pow
-    let obs = state.build_obstacles(); // Vec<bool>: body obstacles
-    let sng = state.snake_grid();      // Vec<u8>:   snake index per cell
-    let w = state.width as usize;
+    let obs = state.build_obstacles();
+    let sng = state.snake_grid();
+    let w   = state.width as usize;
 
-    // Gravity-aware food distance
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
@@ -46,8 +44,15 @@ pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
         })
         .sum();
 
-    // Stability: penalise snakes not grounded
-    let stability: i32 = state.snakes.iter().enumerate()
+    let stability = stability_score(state, player, &sng, w);
+
+    my * 100 - opp * 80 + food_bonus + stability
+}
+
+// ── Shared stability helper ───────────────────────────────────────────────────
+
+fn stability_score(state: &GameState, player: u8, sng: &[u8], w: usize) -> i32 {
+    state.snakes.iter().enumerate()
         .filter(|(_, s)| s.player == player)
         .map(|(snake_idx, s)| {
             let grounded = s.body.iter().any(|&p| {
@@ -62,9 +67,117 @@ pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
             });
             if grounded { 0 } else { -120 }
         })
-        .sum();
+        .sum()
+}
 
-    my * 100 - opp * 80 + food_bonus + stability
+/// V2 heuristic: score delta + competitive food assignment + stability.
+///
+/// Key improvements over v1:
+///   1. Food competition — each food item is scored by whether we or the
+///      opponent wins the race to it (my_dist vs opp_dist).
+///   2. Friendly coordination — greedy assignment ensures no two of our
+///      snakes "double-count" the same food.  The snake with a better
+///      alternative elsewhere naturally yields the contested item because
+///      its closer food is assigned first in the sorted pass.
+pub fn heuristic_v2(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my_score  = state.score(player) as i32;
+    let opp_score = state.score(1 - player) as i32;
+    let score_delta = my_score * 100 - opp_score * 80;
+
+    let obs = state.build_obstacles();
+    let sng = state.snake_grid();
+    let w   = state.width as usize;
+
+    let stability = stability_score(state, player, &sng, w);
+
+    // Collect food cell indices once.
+    let food_cis: Vec<usize> = state.food.iter().enumerate()
+        .filter(|(_, &b)| b)
+        .map(|(ci, _)| ci)
+        .collect();
+
+    if food_cis.is_empty() {
+        return score_delta + stability;
+    }
+
+    let my_snakes: Vec<_> = state.snakes.iter().filter(|s| s.player == player).collect();
+    let op_snakes: Vec<_> = state.snakes.iter().filter(|s| s.player != player).collect();
+    let n_my   = my_snakes.len();
+    let n_food = food_cis.len();
+
+    // One BFS distance-map per snake (gravity-aware).  O((n_my+n_op) * w*h).
+    let dist_my: Vec<Vec<i32>> = my_snakes.iter()
+        .map(|s| state.bfs_dist_map_grounded(s.head(), &state.food, &obs))
+        .collect();
+    let dist_op: Vec<Vec<i32>> = op_snakes.iter()
+        .map(|s| state.bfs_dist_map_grounded(s.head(), &state.food, &obs))
+        .collect();
+
+    // For each food: best (minimum) distance from any opponent snake.
+    let best_op_dist: Vec<i32> = food_cis.iter().map(|&ci| {
+        dist_op.iter()
+            .map(|d| d[ci])
+            .filter(|&d| d >= 0)
+            .min()
+            .unwrap_or(i32::MAX)
+    }).collect();
+
+    // Greedy food assignment — prevents two friendly snakes competing for the
+    // same item.  Sort all (my_snake, food, dist) triples by distance so that
+    // the closest reachable pair is assigned first.  A snake that has a closer
+    // food elsewhere is assigned that one first and naturally yields the farther
+    // contested item to its teammate.
+    // Build (food_idx, snake_idx, dist) triples — plain loop avoids
+    // nested-closure borrow issues with dist_my.
+    let mut triples: Vec<(usize, usize, i32)> =
+        Vec::with_capacity(n_food * n_my);
+    for fi in 0..n_food {
+        let ci = food_cis[fi];
+        for si in 0..n_my {
+            let d = dist_my[si][ci];
+            if d >= 0 { triples.push((fi, si, d)); }
+        }
+    }
+    triples.sort_unstable_by_key(|&(_, _, d)| d);
+
+    let mut food_claimed  = vec![false; n_food];
+    let mut snake_food: Vec<Option<(usize, i32)>> = vec![None; n_my]; // (food_idx, dist)
+    for (fi, si, d) in triples {
+        if food_claimed[fi] || snake_food[si].is_some() { continue; }
+        food_claimed[fi] = true;
+        snake_food[si]   = Some((fi, d));
+    }
+
+    // Score each of my snakes based on its assigned food and the competition.
+    let food_score: i32 = (0..n_my).map(|si| {
+        match snake_food[si] {
+            // No reachable food for this snake — heavy penalty.
+            None => -50,
+
+            Some((fi, my_d)) => {
+                let op_d      = best_op_dist[fi];
+                let proximity = 20 - my_d.min(20); // 20 at dist=0, 0 at dist≥20
+
+                if op_d == i32::MAX {
+                    // Only we can reach this food — full proximity bonus.
+                    proximity + 20
+                } else if my_d < op_d {
+                    // We win the race.
+                    proximity + 10
+                } else if my_d == op_d {
+                    // Contested — proximity still useful but small risk penalty.
+                    proximity - 5
+                } else {
+                    // Opponent wins — we'll arrive too late, wasted effort.
+                    -15
+                }
+            }
+        }
+    }).sum();
+
+    score_delta + food_score + stability
 }
 
 impl Bot for BeamSearchBot {

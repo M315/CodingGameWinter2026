@@ -470,6 +470,42 @@ impl GameState {
         i32::MAX
     }
 
+    /// Full gravity-aware distance map from `start`.
+    /// Returns a flat Vec<i32> where dist[ci] is the BFS distance to cell ci,
+    /// or -1 if unreachable under the gravity-aware rules.
+    /// Unlike `bfs_dist_grounded` (which returns the distance to the nearest
+    /// target and exits early), this visits the whole reachable grid so the
+    /// caller can look up distances to every food cell in one pass.
+    pub fn bfs_dist_map_grounded(&self, start: Pos, targets: &[bool], obs: &[bool]) -> Vec<i32> {
+        let w = self.width as usize;
+        let size = w * self.height as usize;
+        let start_ci = start.y as usize * w + start.x as usize;
+
+        let mut dist = vec![-1i32; size];
+        dist[start_ci] = 0;
+        let mut q: VecDeque<usize> = VecDeque::new();
+        q.push_back(start_ci);
+
+        let dirs = Dir::all();
+        while let Some(ci) = q.pop_front() {
+            let d = dist[ci];
+            let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+            for &dir in &dirs {
+                let (dx, dy) = dir.delta();
+                let (nx, ny) = (cx + dx, cy + dy);
+                if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                let ni = ny as usize * w + nx as usize;
+                if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
+                // Food cells are always passable (they provide support and are targets).
+                // Non-food cells must be statically grounded.
+                if !targets[ni] && !self.is_grounded_cell_ci(ni, w, targets) { continue; }
+                dist[ni] = d + 1;
+                q.push_back(ni);
+            }
+        }
+        dist
+    }
+
     /// Gravity-aware first-step BFS. First step from start is unrestricted
     /// (snake body provides support); subsequent cells must be grounded.
     pub fn bfs_first_step_grounded(&self, start: Pos, targets: &[bool], obs: &[bool]) -> Option<Dir> {
