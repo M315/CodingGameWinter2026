@@ -43,6 +43,7 @@ use snakebyte::*;
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
+use std::thread;
 use std::time::Instant;
 
 // ============================================================
@@ -81,6 +82,12 @@ fn main() {
     let bench      = arg("--bench").and_then(|s| s.parse().ok()).unwrap_or(1usize);
     let quiet      = args.contains(&"--quiet".to_string()) || bench > 1;
     let time_limit = arg("--time-limit").and_then(|s| s.parse().ok()).unwrap_or(40u64);
+    // Parallel worker count for bench runs. Default: physical cores, capped at 4.
+    let jobs = arg("--jobs")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(4)
+        });
 
     // Build the map pool.
     // --map <file>  → single fixed map for all games (useful for focused testing)
@@ -98,21 +105,17 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut p0_wins = 0usize;
-    let mut p1_wins = 0usize;
-    let mut draws   = 0usize;
     let total_t = Instant::now();
 
-    for game_n in 0..bench {
-        let map_str = &pool[game_n % pool.len()];
+    // Single game: sequential with full visualization.
+    // Multiple games: parallel across `jobs` threads — each game is independent.
+    if bench == 1 {
+        let map_str = &pool[0];
         let mut state = build_state_from_map(map_str);
-        // Skip the 950ms first-turn bonus during multi-game benchmarks —
-        // it distorts timings without affecting relative win rates.
-        if bench > 1 { state.turn = 1; }
         let mut bots: [Box<dyn Bot>; 2] = [make_bot(p0_name, time_limit), make_bot(p1_name, time_limit)];
 
         if !quiet {
-            eprintln!("=== Game {} | P0={} vs P1={} ===", game_n + 1, p0_name, p1_name);
+            eprintln!("=== Game 1 | P0={} vs P1={} ===", p0_name, p1_name);
             eprintln!("{}", visualize(&state));
         }
 
@@ -121,11 +124,9 @@ fn main() {
             let acts0 = bots[0].choose_actions(&state, 0);
             let p0_ms = t0.elapsed().as_millis();
             let acts1 = bots[1].choose_actions(&state, 1);
-
             let mut combined: HashMap<u8, Dir> = acts0;
             for (k, v) in acts1 { combined.entry(k).or_insert(v); }
             state.step(&combined);
-
             if !quiet {
                 eprintln!("{}", visualize(&state));
                 eprintln!("  P0 ({}) decision: {}ms", p0_name, p0_ms);
@@ -134,17 +135,76 @@ fn main() {
 
         let s0 = state.score(0);
         let s1 = state.score(1);
-        if s0 > s1 { p0_wins += 1; } else if s1 > s0 { p1_wins += 1; } else { draws += 1; }
+        let outcome = if s0 > s1 { "P0 wins" } else if s1 > s0 { "P1 wins" } else { "draw" };
+        eprintln!("Game   1 | turn {:3} | P0 {} ({}) | P1 {} ({}) | {}", state.turn, s0, p0_name, s1, p1_name, outcome);
 
-        if !quiet || game_n == bench - 1 {
-            eprintln!(
-                "Game {:3} | turn {:3} | P0 {} ({}) | P1 {} ({})",
-                game_n + 1, state.turn, s0, p0_name, s1, p1_name
-            );
-        }
+        println!("\n=== 1 game in {}ms ===", total_t.elapsed().as_millis());
+        let (p0w, p1w, dw) = if s0 > s1 { (1,0,0) } else if s1 > s0 { (0,1,0) } else { (0,0,1) };
+        println!("  P0 {:>10} : {:3} wins ({:.1}%)", p0_name, p0w, 100.0 * p0w as f64);
+        println!("  P1 {:>10} : {:3} wins ({:.1}%)", p1_name, p1w, 100.0 * p1w as f64);
+        println!("  draws      : {:3}      ({:.1}%)", dw, 100.0 * dw as f64);
+        return;
     }
 
-    println!("\n=== {} games in {}ms ===", bench, total_t.elapsed().as_millis());
+    // Multi-game parallel bench.
+    // Divide game indices into `jobs` chunks; each chunk runs on its own thread.
+    // std::thread::scope keeps borrows of pool/p0_name/p1_name valid without cloning.
+    eprintln!("Running {} games across {} threads...", bench, jobs);
+
+    struct GameResult { game_n: usize, s0: usize, s1: usize, turn: u32 }
+
+    let chunk_size = bench.div_ceil(jobs);
+    // Rebind as slice references so the `move` closures below copy the pointer,
+    // not the owned Vec/String — thread::scope guarantees these outlive the threads.
+    let pool: &[String] = &pool;
+    let mut results: Vec<GameResult> = thread::scope(|s| {
+        let handles: Vec<_> = (0..jobs)
+            .map(|worker| {
+                let start = worker * chunk_size;
+                let end   = (start + chunk_size).min(bench);
+                s.spawn(move || {
+                    (start..end).map(|game_n| {
+                        let map_str = &pool[game_n % pool.len()];
+                        let mut state = build_state_from_map(map_str);
+                        // Skip 950ms first-turn bonus — distorts timings without affecting win rates.
+                        state.turn = 1;
+                        let mut bots: [Box<dyn Bot>; 2] = [
+                            make_bot(p0_name, time_limit),
+                            make_bot(p1_name, time_limit),
+                        ];
+                        while !state.is_over() && state.snakes_alive(0) && state.snakes_alive(1) {
+                            let acts0 = bots[0].choose_actions(&state, 0);
+                            let acts1 = bots[1].choose_actions(&state, 1);
+                            let mut combined: HashMap<u8, Dir> = acts0;
+                            for (k, v) in acts1 { combined.entry(k).or_insert(v); }
+                            state.step(&combined);
+                        }
+                        GameResult { game_n, s0: state.score(0), s1: state.score(1), turn: state.turn }
+                    }).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().expect("worker thread panicked")).collect()
+    });
+
+    results.sort_unstable_by_key(|r| r.game_n);
+
+    let mut p0_wins = 0usize;
+    let mut p1_wins = 0usize;
+    let mut draws   = 0usize;
+    for r in &results {
+        if r.s0 > r.s1 { p0_wins += 1; } else if r.s1 > r.s0 { p1_wins += 1; } else { draws += 1; }
+    }
+
+    // Print last game summary (mirrors pre-parallel behaviour in quiet mode).
+    if let Some(last) = results.last() {
+        eprintln!(
+            "Game {:3} | turn {:3} | P0 {} ({}) | P1 {} ({})",
+            last.game_n + 1, last.turn, last.s0, p0_name, last.s1, p1_name
+        );
+    }
+
+    println!("\n=== {} games in {}ms ({} threads) ===", bench, total_t.elapsed().as_millis(), jobs);
     println!("  P0 {:>10} : {:3} wins ({:.1}%)", p0_name, p0_wins, 100.0 * p0_wins as f64 / bench as f64);
     println!("  P1 {:>10} : {:3} wins ({:.1}%)", p1_name, p1_wins, 100.0 * p1_wins as f64 / bench as f64);
     println!("  draws      : {:3}      ({:.1}%)", draws, 100.0 * draws as f64 / bench as f64);
