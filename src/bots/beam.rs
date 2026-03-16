@@ -3,6 +3,57 @@ use std::time::{Duration, Instant};
 use super::{Bot, GameState, Dir, Pos, DirArr, old_greedy_dirmap, gen_combos, dirmap_to_hashmap,
             greedy_actions, gen_action_combos};
 
+/// Cap on my-player combo count per beam node in the inner loop (depth ≥ 1).
+///
+/// Raw combo count is 3^N_my.  Pruning to COMBO_CAP reduces the per-state
+/// branching factor and allows proportionally deeper search in the same budget:
+///   N_my=1: 3 combos  → no change (3 ≤ 9)
+///   N_my=2: 9 combos  → no change (9 ≤ 9)
+///   N_my=3: 27 combos → 9  (3× deeper search)
+///   N_my=4: 81 combos → 9  (9× deeper search)
+///
+/// Food-eating combos always rank first (+100 bonus) so they are never pruned.
+const COMBO_CAP: usize = 9;
+
+/// Rank `combos` by score and truncate in-place to `COMBO_CAP`.
+/// No-op when `combos.len() <= COMBO_CAP`.
+///
+/// Score per combo:
+///   +100 per snake whose proposed head lands on food (never prune these)
+///   +2   per snake whose direction matches its `greedy` preference
+///
+/// Uses `sort_by_cached_key` so the score function runs exactly once per combo.
+fn rank_and_prune_combos(combos: &mut Vec<DirArr>, greedy: &DirArr, state: &GameState, player: u8) {
+    if combos.len() <= COMBO_CAP { return; }
+    let w = state.width as usize;
+
+    // Precompute head positions to avoid repeated Vec search inside the key fn.
+    let mut heads: [Option<Pos>; 8] = [None; 8];
+    state.snakes.iter()
+        .filter(|s| s.player == player)
+        .for_each(|s| heads[s.id as usize] = Some(s.head()));
+
+    // Compute each combo's score once (sort_by_cached_key guarantees this).
+    // Negate so that sort_by_cached_key (ascending) gives us best-first order.
+    combos.sort_by_cached_key(|c| {
+        let mut score = 0i32;
+        for id in 0..8usize {
+            let Some(dir) = c[id] else { continue };
+            if let Some(h) = heads[id] {
+                let (dx, dy) = dir.delta();
+                let (nx, ny) = (h.x + dx, h.y + dy);
+                if nx >= 0 && ny >= 0 && nx < state.width && ny < state.height
+                    && state.food[ny as usize * w + nx as usize] {
+                    score += 100;
+                }
+            }
+            if greedy[id] == Some(dir) { score += 2; }
+        }
+        -score
+    });
+    combos.truncate(COMBO_CAP);
+}
+
 pub struct BeamSearchBot {
     pub beam_width:   usize,
     pub horizon:      usize,
@@ -395,7 +446,15 @@ impl Bot for BeamSearchBot {
                     next.push((first_acts, cur, score));
                     continue;
                 }
-                let my_combos = gen_combos(&cur, player);
+                let mut my_combos = gen_combos(&cur, player);
+                // Prune to COMBO_CAP when there are more combos than the cap
+                // (only applies to 3+ snake players).  Compute my greedy preference
+                // only when pruning is needed — one extra BFS call is far cheaper
+                // than expanding 3× more combos.
+                if my_combos.len() > COMBO_CAP {
+                    let my_pref = old_greedy_dirmap(&cur, player);
+                    rank_and_prune_combos(&mut my_combos, &my_pref, &cur, player);
+                }
                 let opp_acts  = old_greedy_dirmap(&cur, 1 - player);
                 for combo in my_combos {
                     let mut ns = cur.clone();

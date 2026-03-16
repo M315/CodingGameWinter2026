@@ -720,3 +720,107 @@ Lesson: grounded BFS is faster because it prunes more cells, not because it's si
    budget can now explore wider or deeper. Retest optimal width=120, horizon=8 settings.
 4. **T4 reversible step**: low ROI given 15% clone cost — defer unless other gains plateau.
 
+---
+
+## 2026-03-16 — Multi-food BFS (reverse BFS) — null result / regression
+
+### What was tried
+Added `with_food_dist_map(obs, |food_dist| …)` to `GameState` in `game.rs`:
+a single reverse multi-source BFS seeded from all food cells simultaneously.
+The goal: replace N_my per-snake forward early-exit BFS calls in `old_heuristic`
+with one reverse BFS + O(1) head lookups, saving N_my-1 BFS initialisations.
+
+`with_food_dist_map` is implemented using BFS_SCRATCH (TLS, zero-alloc), seeded at
+every food cell (dist=0), expanding outward. Snake-head cells are in obs so
+`food_dist[head_ci] == -1`; heuristic recovers via `min(food_dist[neighbor]+1)`.
+
+### Benchmark result
+| Component | Before | After |
+|---|---|---|
+| `old_heuristic` | 0.50 µs | 7.33 µs (14× slower) |
+
+Reverted `old_heuristic` immediately. `with_food_dist_map` kept in `game.rs`
+(may be useful for future experiments).
+
+### Root cause — why the reverse BFS is slower
+Early-exit forward BFS terminates when it hits the first food cell. On the exotec
+map with 10 food cells on a 231-cell grid, the average nearest-food distance is
+3–8 cells, so each forward BFS visits only ~10–50 cells before stopping.
+Three per-snake calls = ~30–150 cell visits total.
+
+The reverse BFS ALWAYS visits the entire reachable grid (~200 cells) regardless
+of food proximity. It only beats forward BFS when:
+  1. N_my is very large (saves N_my-1 fill+init overheads), AND
+  2. Food is far from all snakes (forward BFS would also visit many cells)
+Neither condition holds during normal play where snakes are actively hunting food.
+
+### Lesson
+**Reverse BFS is NOT a drop-in replacement for per-snake early-exit BFS.**
+On small maps with food close to snakes, early-exit dominates by a large margin.
+The break-even is roughly N_my ≥ 8 AND avg food distance ≥ W×H / N_food.
+For this game (N_my ≤ 3, food dense), never use reverse BFS in the main heuristic.
+
+`with_food_dist_map` may still be useful for:
+- A post-search territory or Voronoi term that needs a full distance map
+- One-off diagnostics (where call count is low)
+Never call it inside the beam inner loop.
+
+### Next step candidates (unchanged)
+- Body-aware gravity BFS — lets us restore gravity-aware heuristic on platform maps
+- Beam width/horizon retune — step is 27% faster than T2/T3 baseline
+- Combo pruning (top-K actions) — effective branching factor reduction
+- Territory/flood-fill liberty count — detect trapped-snake scenarios
+
+---
+
+## 2026-03-16 — Combo pruning (COMBO_CAP=9) — clear improvement
+
+### What was built
+Added `rank_and_prune_combos` in `beam.rs`, called in the inner loop (depth ≥ 1)
+after `gen_combos` whenever `my_combos.len() > COMBO_CAP`.
+
+**Scoring per combo:**
+- +100 per snake whose proposed head lands on a food cell (always retained)
+- +2 per snake whose direction matches `old_greedy_dirmap` preference
+Sorted descending, truncated to `COMBO_CAP = 9`.
+
+**When pruning fires:** only for 3+ snakes per player (3^3=27 > 9). For 1-2 snake
+players the combos are already ≤ 9 so the guard short-circuits with no overhead.
+
+**Overhead when pruning fires:** one extra `old_greedy_dirmap` call per node
+(~0.33 µs, same cost as the opponent call we already make). The scoring and
+sort are O(27 × 8) operations — negligible.
+
+**Search depth gained (3 snakes, 40ms budget):**
+- Before: 120 nodes × 27 combos × ~1.5 µs ≈ 4.9ms/depth → ~8 depths
+- After:  120 nodes × 9 combos × ~1.5 µs ≈ 1.6ms/depth → ~24 depths
+
+### Benchmark results (exotec arena, 50 games per orientation)
+| Match-up | P0 wins | P1 wins | Draws |
+|---|---|---|---|
+| beam vs beam (baseline, both pruned) | 30% | 60% | 10% |
+| beam (P0) vs old_beam (P1) | **72%** | 22% | 6% |
+| old_beam (P0) vs beam (P1) | 20% | **60%** | 20% |
+
+Map has a P1 positional advantage (~60% for P1 regardless of bot quality).
+Beam as P0 overcomes the disadvantage with +42pp vs baseline (30% → 72%).
+Beam as P1 holds the position's natural rate (60%), old_beam couldn't break it.
+
+### Lessons
+- **Combo pruning is the biggest quality lever found so far**: 3× more search depth
+  for free, no signal loss because food-eating combos are always preserved.
+- **Greedy-alignment ranking is surprisingly effective**: the +100 food bonus keeps
+  critical combos; the +2 greedy alignment sorts the rest. Only 27 combos and a
+  tiny sort — negligible cost.
+- **Pruning ONLY fires at depth ≥ 1**: depth-0 still evaluates all 27 combos for
+  the initial beam population. This preserves first-move diversity while maximising
+  depth at all subsequent steps.
+- **P1 map bias can mask quality improvements**: the exotec arena gives P1 ~60% win
+  rate for equal bots, so beam as P1 shows "0pp improvement" even though it's
+  clearly better (the P0 test reveals the truth). Always run both orientations.
+
+### Next priorities
+- Beam width/horizon retune: with 3× more depth, optimal (width, horizon) may shift
+- Body-aware gravity BFS: restores gravity signal in the heuristic
+- Territory/flood-fill: detect trapped-snake scenarios
+

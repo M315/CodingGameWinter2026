@@ -443,6 +443,53 @@ impl GameState {
         })
     }
 
+    /// Reverse multi-source BFS from all food/power-source cells.
+    /// Passes a flat `&[i32]` distance map to `f`:
+    ///   dist[ci] = min BFS distance from cell ci to the nearest food  (-1 = unreachable)
+    ///
+    /// Snake-head cells are in `obs` and therefore have dist == -1 even when adjacent to
+    /// food.  Callers that need a head's distance should take `min(food_dist[neighbor]+1)`
+    /// over the head's four accessible neighbours (see `old_heuristic`).
+    ///
+    /// Uses BFS_SCRATCH (TLS) — zero alloc after the first call on each thread.
+    /// Must NOT be called from inside another BFS_SCRATCH closure.
+    pub fn with_food_dist_map<R>(&self, obs: &[bool], f: impl FnOnce(&[i32]) -> R) -> R {
+        let w    = self.width as usize;
+        let size = w * self.height as usize;
+        let dirs = Dir::all();
+        BFS_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_i32(size);
+            let dist  = &mut sc.i32_buf[..size];
+            let queue = &mut sc.queue;
+            dist.fill(-1);
+            queue.clear();
+            // Seed every food cell at distance 0.
+            for (ci, &b) in self.food.iter().enumerate() {
+                if b {
+                    dist[ci] = 0;
+                    queue.push_back(ci);
+                }
+            }
+            // BFS outward — respects platform walls and body obstacles.
+            while let Some(ci) = queue.pop_front() {
+                let d   = dist[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &dirs {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
+                    dist[ni] = d + 1;
+                    queue.push_back(ni);
+                }
+            }
+            f(&sc.i32_buf[..size])
+        })
+    }
+
     /// Zero-alloc variant: reuses SNG_SCRATCH thread-local buffer.
     /// Passes a `&[u8]` snake-index grid to `f` (u8::MAX = no snake).
     pub fn with_snake_grid<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
