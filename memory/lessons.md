@@ -824,3 +824,35 @@ Beam as P1 holds the position's natural rate (60%), old_beam couldn't break it.
 - Body-aware gravity BFS: restores gravity signal in the heuristic
 - Territory/flood-fill: detect trapped-snake scenarios
 
+---
+
+## 2026-03-16 — Beam horizon retune (8 → 200)
+
+### What was changed
+`horizon` parameter changed from `8` to `200` in `src/main.rs` and all `make_bot()`
+entries in `src/bin/simulate.rs`. With `COMBO_CAP=9` pruning, each depth costs ~1.6ms
+(3-snake maps) so the old `horizon=8` cap was exhausted in ~13ms — leaving 27ms of
+the 40ms budget unused. Setting `horizon=200` makes the time limit the only binding
+constraint; the bot will naturally use as many depths as the budget allows.
+
+### Benchmark results (exotec arena, 20 games per orientation)
+| Match-up | P0 wins | P1 wins | Draws |
+|---|---|---|---|
+| beam (P0, h=200) vs old_beam (P1, h=200) | **60%** | 25% | 15% |
+| old_beam (P0, h=200) vs beam (P1, h=200) | 45% | **45%** | 10% |
+
+Combined across both orientations: beam 52.5%, old_beam 35%, draws 12.5%.
+
+### Lessons
+- **Horizon should be ≥ max_game_turns when time-limited**: there is no reason to
+  cap search depth below the game length once a real time limit is in effect.
+  Any `horizon < max_turns` wastes budget on maps where the limit is not hit.
+- **Pruning creates budget headroom that naive parameters don't exploit**: after
+  COMBO_CAP=9 reduced per-depth cost 3×, the old horizon=8 cap became the binding
+  constraint — not the time. Always retune horizon after changing combo count.
+
+### Next priorities
+- Beam width tuning: test width=80/120/160/200 with new h=200 setting
+- Body-aware gravity BFS: correct grounding to use snake's own body as support
+- Territory/flood-fill liberty count
+
