@@ -57,12 +57,17 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
         // `beam` = fast structure (DirArr + TLS scratch) with old_heuristic (plain BFS).
         // old_heuristic is proven better than heuristic_v1 on open-border maps.
         // `beam_vN` = permanent versioned aliases.
-        "beam"          => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, old_heuristic)),
+        "beam"          => Box::new(BeamSearchBot::new(160, 200, time_limit_ms, old_heuristic)),
         "beam_v1"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v1)),
         "beam_v2"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v2)),
         "beam_v3"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v3)),
         "beam_v4"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v4)),
         "old_beam"      => Box::new(OldBeamSearchBot::new(120, 200, time_limit_ms)),
+        // Width variants for tuning (same heuristic + horizon as `beam`)
+        "beam_w60"      => Box::new(BeamSearchBot::new( 60, 200, time_limit_ms, old_heuristic)),
+        "beam_w80"      => Box::new(BeamSearchBot::new( 80, 200, time_limit_ms, old_heuristic)),
+        "beam_w160"     => Box::new(BeamSearchBot::new(160, 200, time_limit_ms, old_heuristic)),
+        "beam_w200"     => Box::new(BeamSearchBot::new(200, 200, time_limit_ms, old_heuristic)),
         // Same heuristic as old beam_v1 but uses gen_action_combos + step(&HashMap) — benchmark only.
         "beam_hashmap"  => Box::new(BeamHashMapBot::new(120, 200, time_limit_ms, heuristic_v1)),
         "mcts"          => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
