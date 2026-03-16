@@ -856,3 +856,167 @@ Combined across both orientations: beam 52.5%, old_beam 35%, draws 12.5%.
 - Body-aware gravity BFS: correct grounding to use snake's own body as support
 - Territory/flood-fill liberty count
 
+
+---
+
+## 2026-03-17 — Game log analysis + real map extraction + MARK debug strategy
+
+### What was done
+- Wrote `scrap_games.py`-free log parser: read CG JSON replay logs directly with Python
+  one-liners inside the conversation; no external script needed.
+- Decoded the `global.graphics` blob format from CG replay JSON:
+  - `width|height|cell[0]..cell[W*H-1]` (1=platform, 0=empty)
+  - `num_food|x0|y0|x1|y1|...` (food spawn positions)
+  - `snakes_per_player` header, then `snakes_per_player` snake records per player:
+    `id|nsegs|x0|y0|x1|y1|...` — repeated twice (once per player)
+- Extracted 3 real CG match maps from logs:
+
+| Log ID | Size | Food | Outcome |
+|--------|------|------|---------|
+| 877959752 | 32×17 | 30 | Lost 21–22 (1 pt) |
+| 877959870 | 42×23 | 62 | **Timed out at turn 198** |
+| 877977892 | 40×22 | 54 | Won 50–15 |
+
+### New map files
+Added `maps/06_cg_32x17.txt`, `maps/07_cg_42x23.txt`, `maps/08_cg_40x22.txt`.
+All 3 verified: load, gravity-settle, and complete a full game.
+
+### New unit tests
+3 tests in `src/game.rs` (`test_map_877959752_initial_state`, etc.) using a shared
+`from_cg_map()` helper. Each verifies dimensions, food count, snake count, snake
+direction, and spot-check platform cells.
+
+### Key finding: timeout on the 42×23 map
+The bot timed out at turn 198 on the largest map (877959870). This is the most
+important regression target — map 07 should be included in any bench run that
+tests time-limit robustness. It has 62 food items (vs 30/54 on others), keeping
+more snakes alive longer, which deepens the beam search tree.
+
+---
+
+## 2026-03-17 — MARK system debug strategy (investigation candidate)
+
+### What to investigate
+CG games support a `MARK x y message` stderr output that draws labels on cells
+in the replay viewer. This is visible in the replay but not sent to the opponent,
+making it purely a debug/analysis tool.
+
+### Emoji obfuscation strategy
+To avoid leaking strategy information to opponents who watch replays:
+- Use emoji sets where each emoji encodes a specific meaning, but no single emoji
+  makes the strategy obvious.
+- Rotate through emoji variants for the same concept so pattern-matching is harder:
+
+| Concept | Emoji pool (rotate or pick randomly) |
+|---------|---------------------------------------|
+| Beam search best path | 🔴 🟥 ❤️ 🎯 |
+| Food BFS target | 🟡 ⭐ 💛 🌟 |
+| Danger / death zone | 💀 ⚫ 🖤 🔵 |
+| Snake territory / flood | 🟢 💚 🍀 ✅ |
+| Heuristic score (high) | 🔥 ⚡ 💥 🌊 |
+| Heuristic score (low) | 🌙 💤 🌫️ 🫥 |
+
+### Implementation approach
+```rust
+// In choose_actions(), after beam search completes:
+// Output MARK for the top beam node's path (first few steps)
+for (i, pos) in best_path.iter().take(4).enumerate() {
+    let emoji = ["🔴","🟥","❤️","🎯"][i % 4];
+    eprintln!("MARK {} {} {}", pos.x, pos.y, emoji);
+}
+```
+
+### Considerations
+- `eprintln!` goes to stderr → visible in CG replay viewer, not sent as a move.
+- Keep MARK output behind a `#[cfg(debug_assertions)]` or a compile-time flag so
+  it's stripped from the production submission (saves stderr bandwidth).
+- Alternatively, gate on `self.turn == 1` or a low-frequency modulo to reduce noise.
+- The emoji pool per concept should be fixed at compile time (not random) so
+  replays are reproducible across re-runs.
+- Worth confirming: does CG count stderr output against the time budget? If so,
+  limit MARK calls to ≤ 10 per turn.
+
+### What this enables
+- Visualise which cells the beam search considers high-value at each turn
+- Confirm food-BFS targeting is correct on real maps
+- Diagnose timeout turns: if MARKs stop appearing, we can see at which turn the
+  budget was fully consumed vs. when the timeout happened
+
+---
+
+## 2026-03-17 — Psyho's debug output decoded (game 877960780)
+
+### What was discovered
+Psyho (top-tier CG player) embeds debug stats directly in the action stdout line:
+```
+4 UP BS=7281 MD=28;5 RIGHT;6 LEFT;7 LEFT
+```
+CG only parses `id DIRECTION` pairs — extra text after the direction is silently
+ignored by the game engine but preserved in the replay JSON under `stdout`.
+
+### Decoded fields
+- **BS** = cumulative beam states evaluated across all turns (not per-turn)
+- **MD** = max search depth reached that turn
+
+### Psyho's performance on 36×20 map (52 food, 4 snakes/player)
+| Metric | Value |
+|--------|-------|
+| States/turn | ~5,000–7,500 (avg ~6,000) |
+| Max depth/turn | 18–29 (median ~22) |
+| Depth trend | Starts at 28-29, drops to 18-19 as game complexity grows |
+
+The depth drop over time (28 → 18) correlates with more snakes alive and more
+food on the board — larger branching factor = fewer depths in the same budget.
+
+### Key insight vs our bot
+Our beam (width=160, COMBO_CAP=9) at 40ms evaluates roughly:
+  160 nodes × ~22 depths × ~9 combos ≈ ~31,680 state-combo pairs
+But many of those are the same GameState evaluated with different opponent moves.
+Psyho's 6k "BS" likely counts unique GameState nodes expanded (not combo variants).
+
+This is the clearest external signal we've had of what a top-tier bot looks like.
+
+### The stdout-piggyback technique
+Much simpler than MARK: append stats after the first snake's direction.
+CG ignores them, but they show up in replay logs.
+No need for emojis — plain `KEY=value` works and is easier to parse.
+
+```rust
+// In choose_actions(), snake 0's action line:
+let first = format!("{} {} BS={} MD={}", id0, dir0.to_str(), total_states, max_depth);
+// then append remaining snakes normally
+```
+
+Gate behind a compile-time flag or strip before submission.
+
+### New map added
+`maps/09_cg_36x20.txt` — the Psyho game map. 36×20, 52 food.
+This is a timeout map for us (turn 48) and should be in all bench runs that
+test time-limit robustness alongside `maps/07_cg_42x23.txt`.
+
+---
+
+## 2026-03-17 — How to recreate a game from CG replay logs
+
+### Recipe (Python, no extra dependencies)
+1. Download the replay JSON from CG (Network tab → find the `.json` with `frames`).
+2. Parse `frames[0].view` → extract `global.graphics` blob.
+3. Blob format:
+   ```
+   width|height|cell[0..W*H]|num_food|x|y...|spp|id|nsegs|x|y...(×spp)|spp|id|nsegs|x|y...(×spp)
+   ```
+   - `cell[i] = 1` → platform, `0` → empty (row-major, top-left origin)
+   - Food: `num_food` then `num_food × 2` x,y values
+   - Snakes: `spp` header, then `spp` records of `id|nsegs|x0|y0...`, repeated twice (once per player)
+4. Player assignment: check `data['agents']` — `agents[i]['index']` maps to `agentId=i` in frames.
+   - `agentId=0` in frame → player 0 → controls snakes listed in that frame's stdout
+   - Snake IDs 0..spp-1 = player 0, spp..2×spp-1 = player 1 (NOT necessarily m315=P0)
+5. Per-turn moves: iterate frames, pair `agentId=0, keyframe=False` (P0 move)
+   with the following `agentId=1, keyframe=True` (P1 move + state update).
+6. Write a `from_cg_map()` test helper, apply each turn's moves via `state.step(&acts)`.
+
+### Correction: player identity matters
+Always check `agents[].index` before assuming m315 = P0.
+In game 877959752: m315 = P1 (snakes 4-7), yoannk = P0 (snakes 0-3).
+The friendly-fire collision at turn 12 (snakes 5 & 7 → food at (19,8)) is
+**both our snakes** competing for the same food — to investigate tomorrow.

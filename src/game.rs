@@ -537,6 +537,17 @@ impl GameState {
             || pow[below_ci]        // power source
     }
 
+    /// Like `is_grounded_cell_ci` but also counts any snake body part below
+    /// as support (matches actual gravity: any snake provides support to snakes above it).
+    #[inline]
+    fn is_grounded_cell_ci_sng(&self, ci: usize, w: usize, pow: &[bool], sng: &[u8]) -> bool {
+        let below_ci = ci + w;
+        below_ci >= self.grid.len()   // bottom edge
+            || self.grid[below_ci]    // platform
+            || pow[below_ci]          // power source
+            || sng[below_ci] != u8::MAX // any snake body
+    }
+
     /// True if position `p` is supported from below (for external callers).
     #[inline]
     pub fn is_grounded_cell(&self, p: Pos) -> bool {
@@ -659,6 +670,46 @@ impl GameState {
                     if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
                     if targets[ni] { return d + 1; }
                     if !self.is_grounded_cell_ci(ni, w, targets) { continue; }
+                    dist[ni] = d + 1;
+                    queue.push_back(ni);
+                }
+            }
+            i32::MAX
+        })
+    }
+
+    /// Like `bfs_dist_grounded` but also treats any snake body part below a cell
+    /// as support.  Pass `sng = state.snake_grid()` (u8::MAX = empty).
+    /// This fixes the over-pruning bug in heuristic_v1 where the snake's own body
+    /// was not recognised as ground during BFS path evaluation.
+    pub fn bfs_dist_grounded_sng(&self, start: Pos, targets: &[bool], obs: &[bool], sng: &[u8]) -> i32 {
+        let w        = self.width as usize;
+        let start_ci = start.y as usize * w + start.x as usize;
+        if targets[start_ci] { return 0; }
+        let size = w * self.height as usize;
+        let dirs = Dir::all();
+        BFS_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_i32(size);
+            let dist  = &mut sc.i32_buf[..size];
+            let queue = &mut sc.queue;
+            dist.fill(-1);
+            dist[start_ci] = 0;
+            queue.clear();
+            queue.push_back(start_ci);
+
+            while let Some(ci) = queue.pop_front() {
+                let d = dist[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &dirs {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
+                    if targets[ni] { return d + 1; }
+                    if !self.is_grounded_cell_ci_sng(ni, w, targets, sng) { continue; }
                     dist[ni] = d + 1;
                     queue.push_back(ni);
                 }
@@ -1030,6 +1081,215 @@ mod tests {
 
     // ── clone throughput ─────────────────────────────────────────────
 
+    // ── real game maps from CG logs ───────────────────────────────────
+
+    /// Build a GameState from a raw flat grid string (# = platform, . = empty),
+    /// food list, and snake list (id, player, body).
+    fn from_cg_map(
+        w: i32,
+        h: i32,
+        rows: &[&str],
+        food: &[(i32, i32)],
+        snakes: &[(u8, u8, &[(i32, i32)])],
+    ) -> GameState {
+        let mut grid = vec![false; (w * h) as usize];
+        for (y, row) in rows.iter().enumerate() {
+            for (x, ch) in row.chars().enumerate() {
+                if ch == '#' {
+                    grid[y * w as usize + x] = true;
+                }
+            }
+        }
+        let mut s = GameState::new(w, h, grid);
+        for &(x, y) in food {
+            s.add_food(Pos::new(x, y));
+        }
+        for &(id, player, body) in snakes {
+            s.snakes.push(snake(id, player, body));
+        }
+        s
+    }
+
+    #[test]
+    fn test_map_877959752_initial_state() {
+        // 32×17, game 877959752 — 8 snakes (4 per player), 30 food items
+        let s = from_cg_map(
+            32, 17,
+            &[
+                "..............#..#..............",
+                "..............#..#..............",
+                ".........#............#.........",
+                ".........#............#.........",
+                "................................",
+                ".........#.....##.....#.........",
+                ".........#............#.........",
+                ".......#.......##.......#.......",
+                ".....##........##........##.....",
+                "........#..............#........",
+                "..##...#................#...##..",
+                ".#....#.......#..#.......#....#.",
+                ".#..........##....##..........#.",
+                "###..#.........##.........#..###",
+                "######.....#..####..#.....######",
+                "#######..##############..#######",
+                "################################",
+            ],
+            &[
+                (13,13),(18,13),(21,5),(10,5),(26,9),(5,9),(20,12),(11,12),
+                (7,11),(24,11),(30,6),(1,6),(23,11),(8,11),(8,7),(23,7),
+                (29,3),(2,3),(29,9),(2,9),(4,3),(27,3),(2,7),(29,7),
+                (12,8),(19,8),(0,9),(31,9),(7,13),(24,13),
+            ],
+            &[
+                (0, 0, &[(25,12),(25,13),(25,14)]),
+                (1, 0, &[(14,8),(14,9),(14,10)]),
+                (2, 0, &[(10,12),(10,13),(10,14)]),
+                (3, 0, &[(6,5),(6,6),(6,7)]),
+                (4, 1, &[(6,12),(6,13),(6,14)]),
+                (5, 1, &[(17,8),(17,9),(17,10)]),
+                (6, 1, &[(21,12),(21,13),(21,14)]),
+                (7, 1, &[(25,5),(25,6),(25,7)]),
+            ],
+        );
+        assert_eq!(s.width, 32);
+        assert_eq!(s.height, 17);
+        assert_eq!(s.snakes.len(), 8);
+        assert_eq!(s.food_count, 30);
+        // All snakes start with 3 segments and face Up (head.y < body[1].y)
+        for sn in &s.snakes {
+            assert_eq!(sn.len(), 3);
+            assert_eq!(sn.dir, Dir::Up);
+        }
+        // Spot-check: snake 0 head on a non-platform cell
+        assert!(!s.is_platform(Pos::new(25, 12)));
+        // Bottom row is solid platform
+        assert!(s.is_platform(Pos::new(0, 16)));
+    }
+
+    #[test]
+    fn test_map_877959870_initial_state() {
+        // 42×23, game 877959870 (timeout game) — 8 snakes, 62 food items
+        let s = from_cg_map(
+            42, 23,
+            &[
+                "....................##....................",
+                "..........................................",
+                "..........................................",
+                ".......##........................##.......",
+                "..........................................",
+                "..........................................",
+                "...##................................##...",
+                "....#..........#..........#..........#....",
+                "..........##....#........#....##..........",
+                "................#...##...#................",
+                "..........................................",
+                ".#..................##..................#.",
+                "#...........#.....#....#.....#...........#",
+                "............##....#.##.#....##............",
+                "..#..........#..............#..........#..",
+                ".#......#..#..................#..#......#.",
+                "...##..#..#....................#..#..##...",
+                "..#............##.#....#.##............#..",
+                "#.......#......#...#..#...#......#.......#",
+                "####...#########...#..#...#########...####",
+                "#####..##########........##########..#####",
+                "#####..###########..##..###########..#####",
+                "##########################################",
+            ],
+            &[
+                (10,2),(31,2),(19,2),(22,2),(19,3),(22,3),(9,4),(32,4),
+                (19,5),(22,5),(0,6),(41,6),(6,8),(35,8),(19,8),(22,8),
+                (15,9),(26,9),(6,12),(35,12),(14,12),(27,12),(0,13),(41,13),
+                (20,15),(21,15),(11,16),(30,16),(20,16),(21,16),(3,17),(38,17),
+                (6,17),(35,17),(9,0),(32,0),(13,2),(28,2),(16,3),(25,3),
+                (13,4),(28,4),(0,8),(41,8),(2,8),(39,8),(7,8),(34,8),
+                (13,8),(28,8),(5,10),(36,10),(7,11),(34,11),(14,11),(27,11),
+                (4,12),(37,12),(16,12),(25,12),(13,17),(28,17),
+            ],
+            &[
+                (0, 0, &[(12,16),(12,17),(12,18)]),
+                (1, 0, &[(11,5),(11,6),(11,7)]),
+                (2, 0, &[(23,14),(23,15),(23,16)]),
+                (3, 0, &[(0,15),(0,16),(0,17)]),
+                (4, 1, &[(29,16),(29,17),(29,18)]),
+                (5, 1, &[(30,5),(30,6),(30,7)]),
+                (6, 1, &[(18,14),(18,15),(18,16)]),
+                (7, 1, &[(41,15),(41,16),(41,17)]),
+            ],
+        );
+        assert_eq!(s.width, 42);
+        assert_eq!(s.height, 23);
+        assert_eq!(s.snakes.len(), 8);
+        assert_eq!(s.food_count, 62);
+        for sn in &s.snakes {
+            assert_eq!(sn.len(), 3);
+            assert_eq!(sn.dir, Dir::Up);
+        }
+        // This is the largest map — verify corner platforms
+        assert!(s.is_platform(Pos::new(0, 22)));
+        assert!(s.is_platform(Pos::new(41, 22)));
+    }
+
+    #[test]
+    fn test_map_877977892_initial_state() {
+        // 40×22, game 877977892 — 8 snakes, 54 food items
+        let s = from_cg_map(
+            40, 22,
+            &[
+                ".......#....#...##....##...#....#.......",
+                "........#....#............#....#........",
+                ".........#....................#.........",
+                "..#..................................#..",
+                "...#................................#...",
+                "#................#....#................#",
+                ".##...........###......###...........##.",
+                "...............#........#...............",
+                ".##..................................##.",
+                "..#......#....................#......#..",
+                "..#.....#......................#.....#..",
+                "........................................",
+                "..##..........#.###..###.#..........##..",
+                "..#.....#....#....#..#....#....#.....#..",
+                "....#...#......................#...#....",
+                ".....#.........#........#.........#.....",
+                "...............#........#...............",
+                "#...###.....#..............#.....###...#",
+                "##..##......#....#....#....#......##..##",
+                "###.......####..###..###..####.......###",
+                "###......######################......###",
+                "########################################",
+            ],
+            &[
+                (14,1),(25,1),(3,2),(36,2),(19,2),(20,2),(15,3),(24,3),
+                (17,4),(22,4),(18,4),(21,4),(8,6),(31,6),(16,9),(23,9),
+                (6,11),(33,11),(10,11),(29,11),(10,13),(29,13),(19,13),(20,13),
+                (9,14),(30,14),(18,14),(21,14),(0,15),(39,15),(3,16),(36,16),
+                (6,19),(33,19),(15,2),(24,2),(5,4),(34,4),(5,6),(34,6),
+                (11,8),(28,8),(6,10),(33,10),(0,11),(39,11),(11,11),(28,11),
+                (5,12),(34,12),(0,13),(39,13),(11,15),(28,15),
+            ],
+            &[
+                (0, 0, &[(0,2),(0,3),(0,4)]),
+                (1, 0, &[(9,17),(9,18),(9,19)]),
+                (2, 0, &[(9,6),(9,7),(9,8)]),
+                (3, 0, &[(36,18),(36,19),(36,20)]),
+                (4, 1, &[(39,2),(39,3),(39,4)]),
+                (5, 1, &[(30,17),(30,18),(30,19)]),
+                (6, 1, &[(30,6),(30,7),(30,8)]),
+                (7, 1, &[(3,18),(3,19),(3,20)]),
+            ],
+        );
+        assert_eq!(s.width, 40);
+        assert_eq!(s.height, 22);
+        assert_eq!(s.snakes.len(), 8);
+        assert_eq!(s.food_count, 54);
+        for sn in &s.snakes {
+            assert_eq!(sn.len(), 3);
+            assert_eq!(sn.dir, Dir::Up);
+        }
+        assert!(s.is_platform(Pos::new(0, 21)));
+    }
+
     #[test]
     fn test_clone_throughput() {
         // Regression guard: 100k clones of a realistic 6-snake state must be fast.
@@ -1049,6 +1309,108 @@ mod tests {
         let ms = t0.elapsed().as_millis();
         eprintln!("100k GameState::clone() = {}ms", ms);
         assert!(ms < 1000, "clone too slow: {}ms", ms);
+    }
+
+    // ── game log replay: 877959752 ────────────────────────────────────
+
+    /// Replay moves from game log 877959752 (32×17, yoannk (P0) vs m315 (P1)).
+    /// Confirms the real-game head-on-food collision at turn 12: our two snakes
+    /// (5 and 7, both P1/m315) both step onto food at (19,8) in the same turn.
+    #[test]
+    fn test_replay_877959752_food_collision() {
+        let mut s = from_cg_map(
+            32, 17,
+            &[
+                "..............#..#..............",
+                "..............#..#..............",
+                ".........#............#.........",
+                ".........#............#.........",
+                "................................",
+                ".........#.....##.....#.........",
+                ".........#............#.........",
+                ".......#.......##.......#.......",
+                ".....##........##........##.....",
+                "........#..............#........",
+                "..##...#................#...##..",
+                ".#....#.......#..#.......#....#.",
+                ".#..........##....##..........#.",
+                "###..#.........##.........#..###",
+                "######.....#..####..#.....######",
+                "#######..##############..#######",
+                "################################",
+            ],
+            &[
+                (13,13),(18,13),(21,5),(10,5),(26,9),(5,9),(20,12),(11,12),
+                (7,11),(24,11),(30,6),(1,6),(23,11),(8,11),(8,7),(23,7),
+                (29,3),(2,3),(29,9),(2,9),(4,3),(27,3),(2,7),(29,7),
+                (12,8),(19,8),(0,9),(31,9),(7,13),(24,13),
+            ],
+            &[
+                (0, 0, &[(25,12),(25,13),(25,14)]),
+                (1, 0, &[(14,8),(14,9),(14,10)]),
+                (2, 0, &[(10,12),(10,13),(10,14)]),
+                (3, 0, &[(6,5),(6,6),(6,7)]),
+                (4, 1, &[(6,12),(6,13),(6,14)]),
+                (5, 1, &[(17,8),(17,9),(17,10)]),
+                (6, 1, &[(21,12),(21,13),(21,14)]),
+                (7, 1, &[(25,5),(25,6),(25,7)]),
+            ],
+        );
+
+        // moves[t] = (p0_actions, p1_actions) from the CG replay log
+        // Format: (snake_id, Dir)
+        let moves: &[&[(u8, Dir)]] = &[
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Right),(3,Dir::Right),(4,Dir::Right),(5,Dir::Right),(6,Dir::Right),(7,Dir::Left )], // t1
+            &[(0,Dir::Up  ),(1,Dir::Up  ),(2,Dir::Down ),(3,Dir::Right),(4,Dir::Up   ),(5,Dir::Right),(6,Dir::Up   ),(7,Dir::Left )], // t2
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Right),(3,Dir::Down ),(4,Dir::Right),(5,Dir::Up   ),(6,Dir::Right),(7,Dir::Down )], // t3
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Right),(3,Dir::Down ),(4,Dir::Down ),(5,Dir::Right),(6,Dir::Right),(7,Dir::Left )], // t4
+            &[(0,Dir::Left),(1,Dir::Left),(2,Dir::Down ),(3,Dir::Left ),(4,Dir::Down ),(5,Dir::Right),(6,Dir::Right),(7,Dir::Left )], // t5
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Left ),(3,Dir::Down ),(4,Dir::Left ),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t6
+            &[(0,Dir::Down),(1,Dir::Right),(2,Dir::Down),(3,Dir::Left ),(4,Dir::Up   ),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t7
+            &[(0,Dir::Left),(1,Dir::Right),(2,Dir::Up  ),(3,Dir::Left ),(4,Dir::Up   ),(5,Dir::Left ),(6,Dir::Right),(7,Dir::Up  )], // t8
+            &[(0,Dir::Down),(1,Dir::Right),(2,Dir::Left),(3,Dir::Left ),(4,Dir::Right),(5,Dir::Left ),(6,Dir::Up   ),(7,Dir::Left )], // t9
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Up  ),(3,Dir::Left ),(4,Dir::Right),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t10
+            &[(0,Dir::Up  ),(1,Dir::Up  ),(2,Dir::Up  ),(3,Dir::Left ),(4,Dir::Up   ),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t11
+            &[(0,Dir::Left),(1,Dir::Right),(2,Dir::Up  ),(3,Dir::Up   ),(4,Dir::Right),(5,Dir::Up   ),(6,Dir::Right),(7,Dir::Left )], // t12
+        ];
+
+        let mut collision_turn = None;
+        let mut collision_snakes: (u8, u8) = (0, 0);
+        let mut collision_pos = Pos::new(0, 0);
+
+        for (t, turn_moves) in moves.iter().enumerate() {
+            let acts: HashMap<u8, Dir> = turn_moves.iter().cloned().collect();
+
+            // Before stepping: check if two snakes' proposed heads land on the
+            // same food cell — that's the real-game collision we're capturing.
+            let proposed: Vec<(u8, Pos)> = s.snakes.iter()
+                .filter_map(|sn| {
+                    acts.get(&sn.id).map(|&d| {
+                        let (dx, dy) = d.delta();
+                        (sn.id, sn.head().translate(dx, dy))
+                    })
+                })
+                .collect();
+
+            for i in 0..proposed.len() {
+                for j in (i+1)..proposed.len() {
+                    let pos = proposed[i].1;
+                    if pos == proposed[j].1 && s.food[s.cell_idx(pos)] {
+                        collision_turn  = Some(t + 1);
+                        collision_snakes = (proposed[i].0, proposed[j].0);
+                        collision_pos   = pos;
+                    }
+                }
+            }
+
+            s.step(&acts);
+        }
+
+        // Verified from the real CG replay: our snakes 5 and 7 (both P1/m315) both
+        // step onto food at (19,8) on turn 12 — friendly-fire food collision.
+        assert_eq!(collision_turn,    Some(12),        "collision should be turn 12");
+        assert_eq!(collision_snakes,  (5, 7),          "snakes 5 and 7 collide");
+        assert_eq!(collision_pos,     Pos::new(19, 8), "food cell at (19,8)");
     }
 }
 

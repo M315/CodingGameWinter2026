@@ -1,0 +1,1608 @@
+{
+    "frames": [
+        {
+            "gameInformation": "",
+            "summary": "",
+            "view": " 0\n{\"global\":{\"graphics\":\"32|17|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|1|1|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|1|1|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|1|1|0|0|0|0|0|0|0|0|1|1|0|0|0|0|0|0|0|0|1|1|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|0|0|0|0|0|0|0|1|1|0|0|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|1|0|0|0|1|1|0|0|0|1|0|0|0|0|1|0|0|0|0|0|0|0|1|0|0|1|0|0|0|0|0|0|0|1|0|0|0|0|1|0|0|1|0|0|0|0|0|0|0|0|0|0|1|1|0|0|0|0|1|1|0|0|0|0|0|0|0|0|0|0|1|0|1|1|1|0|0|1|0|0|0|0|0|0|0|0|0|1|1|0|0|0|0|0|0|0|0|0|1|0|0|1|1|1|1|1|1|1|1|1|0|0|0|0|0|1|0|0|1|1|1|1|0|0|1|0|0|0|0|0|1|1|1|1|1|1|1|1|1|1|1|1|1|0|0|1|1|1|1|1|1|1|1|1|1|1|1|1|1|0|0|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|30|13|13|18|13|21|5|10|5|26|9|5|9|20|12|11|12|7|11|24|11|30|6|1|6|23|11|8|11|8|7|23|7|29|3|2|3|29|9|2|9|4|3|27|3|2|7|29|7|12|8|19|8|0|9|31|9|7|13|24|13|4|0|3|25|12|25|13|25|14|1|3|14|8|14|9|14|10|2|3|10|12|10|13|10|14|3|3|6|5|6|6|6|7|4|4|3|6|12|6|13|6|14|5|3|17|8|17|9|17|10|6|3|21|12|21|13|21|14|7|3|25|5|25|6|25|7\"},\"frame\":{\"graphics\":\"0|-1|0|-1|0|0\"}}\n",
+            "keyframe": true,
+            "agentId": -1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 UP;2 RIGHT;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 RIGHT;6 RIGHT;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 UP;2 DOWN;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 UP;2 RIGHT;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 RIGHT;7 DOWN\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 UP;2 RIGHT;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 RIGHT;6 RIGHT;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 LEFT;2 DOWN;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 RIGHT;6 RIGHT;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 UP;2 LEFT;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;1 RIGHT;2 DOWN;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 RIGHT;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 LEFT;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;1 RIGHT;2 LEFT;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 LEFT;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 UP;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 UP;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 RIGHT;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 UP;2 LEFT;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 RIGHT;2 LEFT;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 LEFT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 UP;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 LEFT;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 LEFT;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 RIGHT;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;1 UP;2 RIGHT;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 LEFT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;1 LEFT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 UP;2 LEFT;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;1 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 DOWN;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 RIGHT;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 LEFT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 LEFT;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 LEFT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 DOWN;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 RIGHT;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 DOWN;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 RIGHT;6 DOWN;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 LEFT;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 RIGHT;6 RIGHT;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 DOWN;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 DOWN;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 LEFT;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 DOWN;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 LEFT;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 RIGHT;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 LEFT;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 DOWN;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 RIGHT;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 LEFT;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 UP;6 LEFT;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 RIGHT;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 DOWN;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 DOWN;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 RIGHT;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 RIGHT;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 LEFT;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 LEFT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 LEFT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 LEFT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 RIGHT;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 LEFT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 DOWN\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 DOWN;5 UP;6 RIGHT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;5 UP;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 RIGHT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 LEFT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 LEFT;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 DOWN;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 RIGHT;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 UP;5 UP;6 UP;7 LEFT\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 RIGHT\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;6 LEFT;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        },
+        {
+            "gameInformation": "",
+            "stdout": "0 UP;2 UP;3 UP\n",
+            "keyframe": false,
+            "agentId": 0
+        },
+        {
+            "gameInformation": "",
+            "stdout": "4 RIGHT;6 DOWN;7 UP\n",
+            "summary": "",
+            "keyframe": true,
+            "agentId": 1
+        }
+    ],
+    "gameId": 877959752,
+    "refereeInput": "seed=-7391798008006716000\n",
+    "scores": [
+        22.0,
+        21.0
+    ],
+    "ranks": [
+        0,
+        1
+    ],
+    "agents": [
+        {
+            "index": 0,
+            "codingamer": {
+                "userId": 1853956,
+                "pseudo": "yoannk",
+                "avatar": 108956788280248
+            },
+            "agentId": 6318049,
+            "score": 16.674990490313984,
+            "rank": 165,
+            "valid": true
+        },
+        {
+            "index": 1,
+            "codingamer": {
+                "userId": 4057173,
+                "pseudo": "m315",
+                "avatar": 53681343483552
+            },
+            "agentId": 6321121,
+            "score": 21.27125891604823,
+            "rank": 62,
+            "valid": true
+        }
+    ],
+    "metadata": {}
+}

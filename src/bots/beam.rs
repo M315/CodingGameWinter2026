@@ -117,7 +117,10 @@ pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
-            let d = state.bfs_dist_grounded(s.head(), &state.food, &obs);
+            // bfs_dist_grounded_sng: body-aware variant — snake bodies count as ground,
+            // fixing the over-pruning bug where elevated food was marked unreachable
+            // even when the snake's own body would provide support.
+            let d = state.bfs_dist_grounded_sng(s.head(), &state.food, &obs, &sng);
             if d == i32::MAX { -50 } else { 20 - d.min(20) }
         })
         .sum();
