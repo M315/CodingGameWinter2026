@@ -42,7 +42,7 @@ fn main() {
     let my_id_set: std::collections::HashSet<u8> = my_ids.iter().cloned().collect();
 
     let mut state = GameState::new(width, height, grid);
-    let mut bot: Box<dyn Bot> = Box::new(OldBeamSearchBot::new(120, 8, 40));
+    let mut bot: Box<dyn Bot> = Box::new(BeamSearchBot::new(120, 8, 40, old_heuristic));
 
     // ── Game loop ────────────────────────────────────────────────────
     loop {

@@ -77,6 +77,29 @@ impl BeamSearchBot {
     }
 }
 
+/// Main heuristic: plain BFS food distance, no stability term, -30 unreachable penalty.
+/// Lives here (not old_beam.rs) so it is included in the CG submission bundle.
+pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my  = state.score(player) as i32;
+    let opp = state.score(1 - player) as i32;
+
+    // with_obstacles reuses OBS_SCRATCH (TLS, zero-alloc).
+    // bfs_dist is called inside the closure — no nesting conflict (different RefCell).
+    let food_bonus: i32 = state.with_obstacles(|obs| {
+        state.snakes.iter()
+            .filter(|s| s.player == player)
+            .map(|s| {
+                let d = state.bfs_dist(s.head(), &state.food, obs);
+                if d == i32::MAX { -30 } else { 20 - d.min(20) }
+            })
+            .sum()
+    });
+
+    my * 100 - opp * 80 + food_bonus
+}
+
 /// V1 heuristic: score delta + gravity-aware food distance + stability penalty.
 pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
     if !state.snakes_alive(player) { return i32::MIN / 2; }

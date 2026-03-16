@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use super::{Bot, GameState, Dir, gen_action_combos};
+// old_heuristic is defined in beam.rs (included in the CG bundle); re-export here.
+pub use super::beam::old_heuristic;
 
 /// Beam search bot using the old (pre-gravity-aware) heuristic and greedy opponent model.
 /// Used only for benchmarking against the current BeamSearchBot.
@@ -29,27 +31,6 @@ pub fn old_greedy_actions(state: &GameState, player: u8) -> HashMap<u8, Dir> {
         .collect()
 }
 
-/// Old heuristic: plain BFS food distance, no stability term, -30 unreachable penalty.
-pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
-    if !state.snakes_alive(player) { return i32::MIN / 2; }
-
-    let my  = state.score(player) as i32;
-    let opp = state.score(1 - player) as i32;
-
-    // with_obstacles reuses OBS_SCRATCH (TLS, zero-alloc).
-    // bfs_dist is called inside the closure with the same &[bool] — no nesting conflict.
-    let food_bonus: i32 = state.with_obstacles(|obs| {
-        state.snakes.iter()
-            .filter(|s| s.player == player)
-            .map(|s| {
-                let d = state.bfs_dist(s.head(), &state.food, obs);
-                if d == i32::MAX { -30 } else { 20 - d.min(20) }
-            })
-            .sum()
-    });
-
-    my * 100 - opp * 80 + food_bonus
-}
 
 #[cfg(test)]
 mod tests {

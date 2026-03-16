@@ -32,10 +32,21 @@ STRIP_PATTERNS = [
 ]
 
 def clean(text: str) -> str:
-    """Strip crate-relative imports and module declarations."""
+    """Strip crate-relative imports and module declarations.
+
+    Handles multi-line use statements: if a stripped line has no ';' the
+    continuation lines are skipped until the statement is closed.
+    """
     lines = []
+    skipping = False
     for line in text.splitlines():
+        if skipping:
+            if ';' in line:
+                skipping = False
+            continue
         if any(p.match(line) for p in STRIP_PATTERNS):
+            if ';' not in line:
+                skipping = True   # multi-line statement; skip continuations
             continue
         lines.append(line)
     return "\n".join(lines).strip()
@@ -71,6 +82,7 @@ def bundle(bot: str = "beam", all_bots: bool = False) -> str:
 
     return (
         "#![allow(dead_code, unused_imports, unused_variables)]\n"
+        "use std::cell::RefCell;\n"
         "use std::collections::{HashMap, HashSet, VecDeque};\n"
         "use std::sync::Arc;\n"
         "use std::time::{Duration, Instant};\n"
