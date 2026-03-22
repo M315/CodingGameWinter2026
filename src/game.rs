@@ -67,7 +67,7 @@ thread_local! {
 
 /// OR-accumulate a left-shift-by-k of `src[0..n]` into `dst[0..n]`.  k must be in 1..64.
 #[inline]
-fn bb_shl_or(src: &[u64; 16], k: usize, dst: &mut [u64; 16], n: usize) {
+fn bb_shl_or(src: &[u64; 32], k: usize, dst: &mut [u64; 32], n: usize) {
     let rk = 64 - k;
     dst[0] |= src[0] << k;
     for i in 1..n { dst[i] |= (src[i] << k) | (src[i-1] >> rk); }
@@ -75,7 +75,7 @@ fn bb_shl_or(src: &[u64; 16], k: usize, dst: &mut [u64; 16], n: usize) {
 
 /// OR-accumulate a right-shift-by-k of `src[0..n]` into `dst[0..n]`.  k must be in 1..64.
 #[inline]
-fn bb_shr_or(src: &[u64; 16], k: usize, dst: &mut [u64; 16], n: usize) {
+fn bb_shr_or(src: &[u64; 32], k: usize, dst: &mut [u64; 32], n: usize) {
     let lk = 64 - k;
     dst[n-1] |= src[n-1] >> k;
     for i in (0..n-1).rev() { dst[i] |= (src[i] >> k) | (src[i+1] << lk); }
@@ -85,10 +85,10 @@ fn bb_shr_or(src: &[u64; 16], k: usize, dst: &mut [u64; 16], n: usize) {
 /// Build with `GameState::prepare_bfs_bits`; query with `bfs_dist_bits_with`.
 #[derive(Clone)]
 pub struct BfsBitsSetup {
-    pub blocked: [u64; 16],  // platform | obs | OOB bits
-    pub tbits:   [u64; 16],  // target (food) bits
-    pub rcol:    [u64; 16],  // right-column anti-wrap mask
-    pub lcol:    [u64; 16],  // left-column anti-wrap mask
+    pub blocked: [u64; 32],  // platform | obs | OOB bits
+    pub tbits:   [u64; 32],  // target (food) bits
+    pub rcol:    [u64; 32],  // right-column anti-wrap mask
+    pub lcol:    [u64; 32],  // left-column anti-wrap mask
     pub n:       usize,      // number of active 64-bit words = ceil(size/64)
 }
 
@@ -958,16 +958,17 @@ impl GameState {
         let w    = self.width as usize;
         let size = w * self.height as usize;
         let n    = (size + 63) >> 6;
+        assert!(n <= 32, "map too large for bitboard BFS: {} cells (max 2048)", size);
 
-        let mut blocked = [!0u64; 16];
-        let mut tbits   = [0u64;  16];
+        let mut blocked = [!0u64; 32];
+        let mut tbits   = [0u64;  32];
         for i in 0..size {
             if !self.grid[i] && !obs[i] { blocked[i >> 6] &= !(1u64 << (i & 63)); }
             if targets[i]               { tbits  [i >> 6] |=   1u64 << (i & 63);  }
         }
 
-        let mut rcol = [0u64; 16];
-        let mut lcol = [0u64; 16];
+        let mut rcol = [0u64; 32];
+        let mut lcol = [0u64; 32];
         for y in 0..self.height as usize {
             let ri = y * w + (w - 1);
             let li = y * w;
@@ -989,12 +990,12 @@ impl GameState {
         if s.tbits[start_ci >> 6] & (1u64 << (start_ci & 63)) != 0 { return 0; }
 
         let size = w * self.height as usize;
-        let mut front = [0u64; 16];
+        let mut front = [0u64; 32];
         front[start_ci >> 6] |= 1u64 << (start_ci & 63);
         let mut visited = front;
 
         for dist in 1..=size as i32 {
-            let mut exp = [0u64; 16];
+            let mut exp = [0u64; 32];
 
             {
                 let w0 = front[0] & !s.rcol[0];
@@ -1016,7 +1017,7 @@ impl GameState {
             bb_shr_or(&front, w, &mut exp, n);
 
             let mut any_new = false;
-            let mut new_front = [0u64; 16];
+            let mut new_front = [0u64; 32];
             for i in 0..n {
                 let cell = exp[i] & !s.blocked[i] & !visited[i];
                 new_front[i] = cell;
