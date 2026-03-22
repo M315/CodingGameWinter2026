@@ -65,7 +65,7 @@ thread_local! {
 // Primitive types
 // ============================================================
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Default)]
 pub struct Pos {
     pub x: i32,
     pub y: i32,
@@ -79,8 +79,8 @@ impl Pos {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Dir { Up, Down, Left, Right }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Dir { #[default] Up, Down, Left, Right }
 
 impl Dir {
     #[inline]
@@ -253,11 +253,19 @@ impl SnakeBody {
     }
 }
 
+// [u8; 256] doesn't implement Default via derive (stable only covers up to [T;32]).
+impl Default for SnakeBody {
+    fn default() -> Self {
+        SnakeBody { head: Pos::default(), tail: Pos::default(),
+                    len: 0, start: 0, dirs: [0u8; MAX_SNAKE_LEN] }
+    }
+}
+
 // ============================================================
 // Snake
 // ============================================================
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Snake {
     pub id: u8,
     /// body[0] = head, body[last] = tail — compact direction-sequence, no heap alloc
@@ -286,13 +294,74 @@ pub fn infer_dir(parts: &[Pos]) -> Dir {
 }
 
 // ============================================================
+// SnakeVec — fixed-size inline snake storage (no heap alloc on clone)
+// ============================================================
+//
+// Replaces Vec<Snake> so GameState::clone() needs only one remaining malloc
+// (food: Vec<bool>). With Snake: Copy, the whole array copies as a memcpy.
+// Max 8 snakes matches the DirArr capacity already used throughout the code.
+
+pub const MAX_SNAKES: usize = 8;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SnakeVec {
+    data: [Snake; MAX_SNAKES],
+    len:  u8,
+}
+
+impl SnakeVec {
+    #[inline] pub fn new() -> Self {
+        SnakeVec { data: [Snake::default(); MAX_SNAKES], len: 0 }
+    }
+    #[inline] pub fn push(&mut self, s: Snake) {
+        self.data[self.len as usize] = s;
+        self.len += 1;
+    }
+    #[inline] pub fn clear(&mut self) { self.len = 0; }
+    /// In-place filter — same signature as Vec::retain.
+    #[inline] pub fn retain(&mut self, mut f: impl FnMut(&Snake) -> bool) {
+        let mut w = 0usize;
+        for r in 0..self.len as usize {
+            if f(&self.data[r]) { self.data[w] = self.data[r]; w += 1; }
+        }
+        self.len = w as u8;
+    }
+}
+
+impl Default for SnakeVec {
+    fn default() -> Self { SnakeVec::new() }
+}
+
+/// Deref to `[Snake]` gives iter/iter_mut/len/is_empty/find/any/Index for free.
+impl std::ops::Deref for SnakeVec {
+    type Target = [Snake];
+    #[inline] fn deref(&self) -> &[Snake] { &self.data[..self.len as usize] }
+}
+impl std::ops::DerefMut for SnakeVec {
+    #[inline] fn deref_mut(&mut self) -> &mut [Snake] { &mut self.data[..self.len as usize] }
+}
+
+// `for s in &snakevec` and `for s in &mut snakevec` — Deref alone isn't enough
+// for IntoIterator lookup in for-loops, so we implement it explicitly.
+impl<'a> IntoIterator for &'a SnakeVec {
+    type Item = &'a Snake;
+    type IntoIter = std::slice::Iter<'a, Snake>;
+    #[inline] fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+impl<'a> IntoIterator for &'a mut SnakeVec {
+    type Item = &'a mut Snake;
+    type IntoIter = std::slice::IterMut<'a, Snake>;
+    #[inline] fn into_iter(self) -> Self::IntoIter { self.iter_mut() }
+}
+
+// ============================================================
 // GameState
 // ============================================================
 
 /// Clone cost breakdown:
 ///   grid  — Arc refcount bump only (zero copy, zero alloc)
 ///   food  — memcpy of width*height bytes (~264B for a 24×11 map)
-///   snakes — memcpy of Vec<Snake>; each Snake is now stack-only (SnakeBody, no heap alloc)
+///   snakes — memcpy of SnakeVec ([Snake;8] inline); zero heap alloc
 #[derive(Clone, Debug)]
 pub struct GameState {
     pub width:  i32,
@@ -305,8 +374,8 @@ pub struct GameState {
     pub food: Vec<bool>,
     /// Number of live food items — keeps is_over() O(1).
     pub food_count: u32,
-    /// All living snakes (both players)
-    pub snakes: Vec<Snake>,
+    /// All living snakes (both players) — inline, no heap alloc on clone
+    pub snakes: SnakeVec,
     pub turn: u32,
 }
 
@@ -318,7 +387,7 @@ impl GameState {
             grid: Arc::new(grid),
             food: vec![false; size],
             food_count: 0,
-            snakes: Vec::new(),
+            snakes: SnakeVec::new(),
             turn: 0,
         }
     }
