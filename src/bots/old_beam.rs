@@ -59,12 +59,13 @@ mod tests {
 
     #[test]
     fn test_old_heuristic_favors_closer_food() {
-        let mut s = flat_state();
-        // Move snake 0 closer to food at (5,13): head is at (2,13), food at (5,13) = 3 away
-        let score_far = old_heuristic(&s, 0);
-        // Move head to (4,13) — 1 step from food
-        s.snakes[0].body[0] = Pos::new(4, 13);
-        let score_near = old_heuristic(&s, 0);
+        // far: snake head at (2,13), nearest food at (5,13) = 3 steps away
+        let s_far = flat_state();
+        let score_far = old_heuristic(&s_far, 0);
+        // near: snake head at (4,13), 1 step from food — replace snake with valid body
+        let mut s_near = flat_state();
+        s_near.snakes[0] = Snake::new(0, vec![Pos::new(4, 13), Pos::new(3, 13), Pos::new(2, 13)], 0);
+        let score_near = old_heuristic(&s_near, 0);
         assert!(score_near > score_far, "closer food should score higher: {} vs {}", score_near, score_far);
     }
 

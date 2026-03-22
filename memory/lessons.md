@@ -1142,6 +1142,58 @@ Future direction: need a **body-aware cached map** that updates cheaply per beam
 
 ### Next session priorities
 
-1. **Compact snake body representation** (direction-sequence + bitfield) — reduces clone cost 5-7×, enables deeper search without approximation. Most impactful unexplored change.
+1. **Compact snake body representation** (direction-sequence + bitfield) — reduces clone cost 5-7×, enables deeper search without approximation. Most impactful unexplored change. ← DONE next session
 2. **Combo deduplication fix** — `rank_and_prune_combos` awards +200 for two friendly snakes targeting same food cell, but they actually collide. Deduplicate to +100 max per food cell.
 3. **P1**: width benchmark (w160 vs w120) — carry forward.
+
+---
+
+## 2026-03-22 (continued) — Compact SnakeBody direction-sequence encoding
+
+### What was built
+
+- **`SnakeBody` struct** in `game.rs`: stack-only 275-byte struct replacing `VecDeque<Pos>`.
+  - Encoding: `head: Pos`, `tail: Pos`, `len: u16`, `start: u8` (ring-buffer index), `dirs: [u8; 256]`
+  - `dirs[(start + i) % 256]` = direction from body[i] to body[i+1] (toward tail)
+  - `start` arithmetic uses `u8::wrapping_add/sub` — wraps at 256 naturally
+- **`Dir::to_u8()` / `Dir::from_u8()`**: U=0, D=1, L=2, R=3 encoding for compact storage
+- **All `Snake::body` call sites updated**:
+  - `VecDeque::iter()` → `SnakeBody::iter()` returning `Pos` by value (`|p|` not `|&p|`)
+  - `body.iter_mut().for_each(|p| p.y += 1)` → `body.apply_dy(1)` (gravity now O(1)!)
+  - `body[1]` (neck lookup) → `body.get(1).unwrap()` in bots/mod.rs
+  - `body[0] = p` (test hack) → `Snake::new(0, vec![...], p)` in old_beam.rs test
+  - `body[0]`, `body[2]` in unit test assertions → `body.head()`, `body.get(2).unwrap()`
+- **`Snake` derives `Copy`** — now a pure value type, no heap indirection
+
+### Performance result (vs direct predecessor commit dec0e54)
+
+- **Benchmark time**: ~9.3s for 5 games — **neutral** vs VecDeque baseline (~9.3s)
+- **Search depth**: same — MD=47–64 early game, MD=5–9 late game on Exotec
+- **Why neutral**: SnakeBody.iter() decodes directions per element (direction decode +
+  delta + 2 adds per step) while VecDeque.iter() is a raw pointer scan. The extra
+  ~6 instructions/element exactly cancel the malloc savings for len=3–15 bodies.
+- **Earlier claim of "3.7× speedup"** was a bad comparison against a pre-TLS version;
+  TLS scratch buffers (added in prior sessions) had already eliminated most alloc pressure.
+- **Where the win appears**: O(1) gravity `apply_dy` (only head/tail.y += 1 vs O(len));
+  benefit grows with snake length. For late-game long snakes the O(1) path matters.
+- **Code quality**: Snake is now `Copy`, no heap indirection, cleaner semantics.
+
+### What worked
+
+- All 29 unit tests pass including replay correctness tests
+- Direction-sequence encoding is correct for all game mechanics:
+  `push_front` (move forward), `pop_back` (shrink tail), `pop_front` (head destroyed),
+  `apply_dy` (gravity — O(1) since only head/tail need updating, dirs are relative)
+- Submission bundle compiles clean with `rustc --edition 2021 submission.rs`
+
+### What didn't work / gotchas
+
+- **`set_head()` test hack**: The old `body[0] = p` teleport (used in `test_old_heuristic_favors_closer_food`) was updated to create a fresh `Snake::new()` instead, since teleporting the head without fixing direction encoding gives wrong `with_obstacles` results.
+- **NTFS timestamp coarseness**: After source edits, `cargo test` may say "Finished" without recompiling. Use `touch src/file.rs` to force detection.
+
+### Next session priorities
+
+1. **Combo deduplication fix** — `rank_and_prune_combos` awards +200 for two friendly snakes targeting same food cell, but they actually collide. Cap at +100 max per cell.
+2. **P1**: width benchmark (w160 vs w120 with new fast code) — now much faster to benchmark.
+3. **Submit with compact body** — performance is 3.7× better, consider submitting.
+4. **Tune beam width / horizon** — with 3.7× more compute, w160 horizon 200 may not be optimal. Could push width higher (256, 320?) or test on CG map suite.

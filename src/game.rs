@@ -105,27 +105,173 @@ impl Dir {
         match self { Dir::Up => Dir::Down, Dir::Down => Dir::Up,
                      Dir::Left => Dir::Right, Dir::Right => Dir::Left }
     }
+    #[inline] pub fn to_u8(self) -> u8 {
+        match self { Dir::Up => 0, Dir::Down => 1, Dir::Left => 2, Dir::Right => 3 }
+    }
+    #[inline] pub fn from_u8(v: u8) -> Dir {
+        match v { 0 => Dir::Up, 1 => Dir::Down, 2 => Dir::Left, _ => Dir::Right }
+    }
+}
+
+// ============================================================
+// SnakeBody — compact direction-sequence body storage
+// ============================================================
+//
+// Encodes a snake body as (head, dirs[]) without heap allocation.
+// Every beam-search clone is a plain memcpy — no malloc per snake.
+// Max length 256: at 200 turns with start length 3 the body tops out at 203.
+//
+// Ring-buffer layout:
+//   dirs[start], dirs[start+1], ..., dirs[start+len-2]  (all mod 256)
+//   dirs[start+i] = direction FROM body[i] TO body[i+1]  (toward the tail)
+//   head = cached body[0];  tail = cached body[len-1]
+
+pub const MAX_SNAKE_LEN: usize = 256;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SnakeBody {
+    pub head:  Pos,
+    pub tail:  Pos,
+    pub len:   u16,
+    start: u8,   // ring-buffer start index; arithmetic wraps at 256 naturally via u8
+    dirs:  [u8; MAX_SNAKE_LEN],
+}
+
+impl SnakeBody {
+    /// Build from an ordered slice of adjacent positions (head first).
+    pub fn new(parts: &[Pos]) -> Self {
+        assert!(!parts.is_empty() && parts.len() <= MAX_SNAKE_LEN,
+                "snake body length {} out of range", parts.len());
+        let mut b = SnakeBody {
+            head:  parts[0],
+            tail:  *parts.last().unwrap(),
+            len:   parts.len() as u16,
+            start: 0,
+            dirs:  [0u8; MAX_SNAKE_LEN],
+        };
+        for i in 0..parts.len().saturating_sub(1) {
+            let dx = parts[i + 1].x - parts[i].x;
+            let dy = parts[i + 1].y - parts[i].y;
+            b.dirs[i] = match (dx, dy) {
+                (0, -1) => Dir::Up,
+                (0,  1) => Dir::Down,
+                (-1, 0) => Dir::Left,
+                _       => Dir::Right,
+            }.to_u8();
+        }
+        b
+    }
+
+    #[inline] pub fn head(&self) -> Pos { self.head }
+    #[inline] pub fn tail(&self) -> Pos { self.tail }
+    #[inline] pub fn len(&self) -> usize { self.len as usize }
+    #[inline] pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// Teleport the head to `p` (test-only; does not fix direction encoding).
+    #[inline] pub fn set_head(&mut self, p: Pos) { self.head = p; }
+
+    /// Walk body from head to tail without heap allocation.
+    /// Returns `Pos` by value (unlike VecDeque::iter which yields &Pos).
+    pub fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
+        let mut pos = self.head;
+        let mut i   = 0u16;
+        let dirs: &[u8; MAX_SNAKE_LEN] = &self.dirs;
+        let start = self.start;
+        let len   = self.len;
+        std::iter::from_fn(move || {
+            if i >= len { return None; }
+            let cur = pos;
+            if i + 1 < len {
+                let idx = start.wrapping_add(i as u8) as usize;
+                let (dx, dy) = Dir::from_u8(dirs[idx]).delta();
+                pos = Pos { x: pos.x + dx, y: pos.y + dy };
+            }
+            i += 1;
+            Some(cur)
+        })
+    }
+
+    /// O(i) random access (needed for neck lookup at index 1).
+    pub fn get(&self, i: usize) -> Option<Pos> {
+        if i >= self.len as usize { return None; }
+        let mut pos = self.head;
+        for j in 0..i {
+            let idx = self.start.wrapping_add(j as u8) as usize;
+            let (dx, dy) = Dir::from_u8(self.dirs[idx]).delta();
+            pos = Pos { x: pos.x + dx, y: pos.y + dy };
+        }
+        Some(pos)
+    }
+
+    /// Prepend `new_head`; old head becomes body[1].
+    /// Direction stored: from `new_head` toward old head.
+    #[inline]
+    pub fn push_front(&mut self, new_head: Pos) {
+        let dx = self.head.x - new_head.x;
+        let dy = self.head.y - new_head.y;
+        let d = match (dx, dy) {
+            (0, -1) => Dir::Up,
+            (0,  1) => Dir::Down,
+            (-1, 0) => Dir::Left,
+            _       => Dir::Right,
+        };
+        self.start = self.start.wrapping_sub(1);
+        self.dirs[self.start as usize] = d.to_u8();
+        self.head = new_head;
+        self.len += 1;
+    }
+
+    /// Remove the tail (non-eating move: body shrinks from the back).
+    #[inline]
+    pub fn pop_back(&mut self) {
+        if self.len <= 1 { self.len = 0; return; }
+        // dirs[(start + len - 2) % 256] points from body[len-2] to body[len-1]=tail.
+        // New tail = current tail - that delta.
+        let last = self.start.wrapping_add((self.len - 2) as u8) as usize;
+        let (dx, dy) = Dir::from_u8(self.dirs[last]).delta();
+        self.tail = Pos { x: self.tail.x - dx, y: self.tail.y - dy };
+        self.len -= 1;
+    }
+
+    /// Remove the head (head-destroyed shrink, only when len >= 3).
+    #[inline]
+    pub fn pop_front(&mut self) {
+        if self.len <= 1 { self.len = 0; return; }
+        let (dx, dy) = Dir::from_u8(self.dirs[self.start as usize]).delta();
+        self.head = Pos { x: self.head.x + dx, y: self.head.y + dy };
+        self.start = self.start.wrapping_add(1);
+        self.len -= 1;
+        if self.len == 1 { self.tail = self.head; }
+    }
+
+    /// Shift all body parts by `dy` rows — O(1) (only head and tail move).
+    /// Correct because body positions are encoded as relative direction steps.
+    #[inline]
+    pub fn apply_dy(&mut self, dy: i32) {
+        self.head.y += dy;
+        self.tail.y += dy;
+    }
 }
 
 // ============================================================
 // Snake
 // ============================================================
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Snake {
     pub id: u8,
-    /// body[0] = head, body[last] = tail
-    pub body: VecDeque<Pos>,
+    /// body[0] = head, body[last] = tail — compact direction-sequence, no heap alloc
+    pub body: SnakeBody,
     pub dir: Dir,
     pub player: u8,
 }
 
 impl Snake {
     pub fn new(id: u8, parts: Vec<Pos>, player: u8) -> Self {
-        Snake { id, body: VecDeque::from(parts.clone()),
+        Snake { id, body: SnakeBody::new(&parts),
                 dir: infer_dir(&parts), player }
     }
-    #[inline] pub fn head(&self) -> Pos { self.body[0] }
+    #[inline] pub fn head(&self) -> Pos { self.body.head() }
     #[inline] pub fn len(&self) -> usize { self.body.len() }
 }
 
@@ -146,7 +292,7 @@ pub fn infer_dir(parts: &[Pos]) -> Dir {
 /// Clone cost breakdown:
 ///   grid  — Arc refcount bump only (zero copy, zero alloc)
 ///   food  — memcpy of width*height bytes (~264B for a 24×11 map)
-///   snakes — unavoidable: VecDeque bodies per snake
+///   snakes — memcpy of Vec<Snake>; each Snake is now stack-only (SnakeBody, no heap alloc)
 #[derive(Clone, Debug)]
 pub struct GameState {
     pub width:  i32,
@@ -279,7 +425,7 @@ impl GameState {
             // Phase 4 – mark body cells (TLS, no heap alloc after first call)
             for (idx, s) in self.snakes.iter().enumerate() {
                 let end = if eaters[idx] { s.len() } else { s.len().saturating_sub(1) };
-                s.body.iter().take(end).for_each(|&p| {
+                s.body.iter().take(end).for_each(|p| {
                     if p.in_bounds(self.width, self.height) {
                         body_cells[p.y as usize * w + p.x as usize] = true;
                     }
@@ -343,7 +489,7 @@ impl GameState {
 
         // Phase 10 – border removal
         let (w_i, h_i) = (self.width, self.height);
-        self.snakes.retain(|s| s.body.iter().all(|&p| p.in_bounds(w_i, h_i)));
+        self.snakes.retain(|s| s.body.iter().all(|p| p.in_bounds(w_i, h_i)));
 
         self.turn += 1;
     }
@@ -368,7 +514,7 @@ impl GameState {
                 // Rebuild snake_at for this iteration
                 snake_at.fill(u8::MAX);
                 for (idx, s) in self.snakes.iter().enumerate() {
-                    s.body.iter().for_each(|&p| {
+                    s.body.iter().for_each(|p| {
                         if p.in_bounds(self.width, self.height) {
                             snake_at[p.y as usize * w + p.x as usize] = idx as u8;
                         }
@@ -377,7 +523,7 @@ impl GameState {
 
                 to_fall_len = 0;
                 for (idx, s) in self.snakes.iter().enumerate() {
-                    let grounded = s.body.iter().any(|&p| {
+                    let grounded = s.body.iter().any(|p| {
                         let below_y = p.y + 1;
                         if below_y >= self.height { return true; }
                         if p.x < 0 || p.x >= self.width { return false; }
@@ -395,7 +541,7 @@ impl GameState {
 
                 if to_fall_len == 0 { break; }
                 for &idx in &to_fall[..to_fall_len] {
-                    self.snakes[idx].body.iter_mut().for_each(|p| p.y += 1);
+                    self.snakes[idx].body.apply_dy(1);
                 }
             }
         });
@@ -418,7 +564,7 @@ impl GameState {
         let mut g = vec![u8::MAX; (self.width * self.height) as usize];
         let w = self.width as usize;
         self.snakes.iter().enumerate().for_each(|(idx, s)| {
-            s.body.iter().for_each(|&p| {
+            s.body.iter().for_each(|p| {
                 if p.in_bounds(self.width, self.height) {
                     g[p.y as usize * w + p.x as usize] = idx as u8;
                 }
@@ -442,7 +588,7 @@ impl GameState {
             if g.len() < size { g.resize(size, false); }
             g[..size].fill(false);
             self.snakes.iter().for_each(|s| {
-                s.body.iter().take(s.len().saturating_sub(1)).for_each(|&p| {
+                s.body.iter().take(s.len().saturating_sub(1)).for_each(|p| {
                     if p.in_bounds(self.width, self.height) {
                         g[p.y as usize * w + p.x as usize] = true;
                     }
@@ -565,7 +711,7 @@ impl GameState {
             g[..size].fill(u8::MAX);
             let w = self.width as usize;
             self.snakes.iter().enumerate().for_each(|(idx, s)| {
-                s.body.iter().for_each(|&p| {
+                s.body.iter().for_each(|p| {
                     if p.in_bounds(self.width, self.height) {
                         g[p.y as usize * w + p.x as usize] = idx as u8;
                     }
@@ -582,7 +728,7 @@ impl GameState {
         let mut obs = vec![false; (self.width * self.height) as usize];
         let w = self.width as usize;
         self.snakes.iter().for_each(|s| {
-            s.body.iter().take(s.len().saturating_sub(1)).for_each(|&p| {
+            s.body.iter().take(s.len().saturating_sub(1)).for_each(|p| {
                 if p.in_bounds(self.width, self.height) {
                     obs[p.y as usize * w + p.x as usize] = true;
                 }
@@ -1071,8 +1217,8 @@ mod tests {
         let mut s = open(10, 10);
         s.snakes.push(snake(0, 0, &[(5, 2), (5, 3), (5, 4)]));
         s.apply_gravity();
-        assert_eq!(s.snakes[0].body[2], Pos::new(5, 9));
-        assert_eq!(s.snakes[0].body[0], Pos::new(5, 7));
+        assert_eq!(s.snakes[0].body.get(2).unwrap(), Pos::new(5, 9));
+        assert_eq!(s.snakes[0].body.head(), Pos::new(5, 7));
     }
 
     #[test]
@@ -1083,7 +1229,7 @@ mod tests {
         let mut s = GameState::new(10, 10, grid);
         s.snakes.push(snake(0, 0, &[(5, 2), (5, 3), (5, 4)]));
         s.apply_gravity();
-        assert_eq!(s.snakes[0].body[2], Pos::new(5, 4));
+        assert_eq!(s.snakes[0].body.get(2).unwrap(), Pos::new(5, 4));
     }
 
     #[test]
@@ -1094,8 +1240,8 @@ mod tests {
         s.apply_gravity();
         let b = s.snakes.iter().find(|sn| sn.id == 1).unwrap();
         let a = s.snakes.iter().find(|sn| sn.id == 0).unwrap();
-        assert_eq!(b.body[0], Pos::new(5, 4));
-        assert_eq!(a.body[2], Pos::new(5, 3));
+        assert_eq!(b.body.head(), Pos::new(5, 4));
+        assert_eq!(a.body.get(2).unwrap(), Pos::new(5, 3));
     }
 
     #[test]
@@ -1103,7 +1249,7 @@ mod tests {
         let mut s = open(5, 3);
         s.snakes.push(snake(0, 0, &[(2, 0)]));
         s.apply_gravity();
-        assert_eq!(s.snakes[0].body[0], Pos::new(2, 2));
+        assert_eq!(s.snakes[0].body.head(), Pos::new(2, 2));
     }
 
     // ── BFS utilities ────────────────────────────────────────────────
@@ -1546,7 +1692,7 @@ pub fn visualize(state: &GameState) -> String {
         display[y][x] = '*';
     }
     for s in &state.snakes {
-        for (i, &p) in s.body.iter().enumerate() {
+        for (i, p) in s.body.iter().enumerate() {
             if p.in_bounds(state.width, state.height) {
                 display[p.y as usize][p.x as usize] =
                     if i == 0 { (b'A' + s.id) as char } else { (b'a' + s.id) as char };

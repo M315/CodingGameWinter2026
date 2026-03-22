@@ -136,7 +136,7 @@ pub fn gen_combos(state: &GameState, player: u8) -> Vec<DirArr> {
     let mut combos: Vec<DirArr> = vec![[None; 8]];
     for id in ids {
         let s = state.snakes.iter().find(|s| s.id == id).unwrap();
-        let neck = (s.len() >= 2).then(|| s.body[1]);
+        let neck = (s.len() >= 2).then(|| s.body.get(1).unwrap());
         let dirs: Vec<Dir> = Dir::all().iter()
             .filter(|&&d| {
                 let (dx, dy) = d.delta();
@@ -173,7 +173,7 @@ pub fn gen_action_combos(state: &GameState, player: u8) -> Vec<HashMap<u8, Dir>>
         let s = state.snakes.iter().find(|s| s.id == id).unwrap();
         // Neck position: the cell the snake cannot re-enter this turn.
         // Only defined for snakes with 2+ segments; 1-segment snakes can go anywhere.
-        let neck = (s.len() >= 2).then(|| s.body[1]);
+        let neck = (s.len() >= 2).then(|| s.body.get(1).unwrap());
         let dirs: Vec<Dir> = Dir::all().iter()
             .filter(|&&d| {
                 let (dx, dy) = d.delta();

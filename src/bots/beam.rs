@@ -231,7 +231,7 @@ fn stability_score(state: &GameState, player: u8, sng: &[u8], w: usize) -> i32 {
     state.snakes.iter().enumerate()
         .filter(|(_, s)| s.player == player)
         .map(|(snake_idx, s)| {
-            let grounded = s.body.iter().any(|&p| {
+            let grounded = s.body.iter().any(|p| {
                 let below_y = p.y + 1;
                 if below_y >= state.height { return true; }
                 if p.x < 0 || p.x >= state.width { return false; }

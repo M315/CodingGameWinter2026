@@ -55,6 +55,14 @@ thread_local! {
     // simultaneously with BFS_SCRATCH (all three are accessed together in heuristic_v1).
     static OBS_SCRATCH: RefCell<Vec<bool>> = RefCell::new(Vec::new());
     static SNG_SCRATCH: RefCell<Vec<u8>>   = RefCell::new(Vec::new());
+    // Separate RefCell for liberty_count flood-fill (bool visited grid + queue).
+    // Safe to borrow simultaneously with BFS_SCRATCH, OBS_SCRATCH, SNG_SCRATCH.
+    static LIB_SCRATCH: RefCell<(Vec<bool>, VecDeque<usize>)> =
+        RefCell::new((Vec::new(), VecDeque::new()));
+    // Cached food distance map (no snake-body obstacles, only platform walls).
+    // Populated once per real turn by cache_food_dist_no_obs(); read O(1) by
+    // cached_food_dist().  Separate from BFS_SCRATCH so it persists across BFS calls.
+    static FOOD_DIST_CACHE: RefCell<Vec<i32>> = RefCell::new(Vec::new());
 }
 
 // ============================================================
@@ -101,27 +109,173 @@ impl Dir {
         match self { Dir::Up => Dir::Down, Dir::Down => Dir::Up,
                      Dir::Left => Dir::Right, Dir::Right => Dir::Left }
     }
+    #[inline] pub fn to_u8(self) -> u8 {
+        match self { Dir::Up => 0, Dir::Down => 1, Dir::Left => 2, Dir::Right => 3 }
+    }
+    #[inline] pub fn from_u8(v: u8) -> Dir {
+        match v { 0 => Dir::Up, 1 => Dir::Down, 2 => Dir::Left, _ => Dir::Right }
+    }
+}
+
+// ============================================================
+// SnakeBody — compact direction-sequence body storage
+// ============================================================
+//
+// Encodes a snake body as (head, dirs[]) without heap allocation.
+// Every beam-search clone is a plain memcpy — no malloc per snake.
+// Max length 256: at 200 turns with start length 3 the body tops out at 203.
+//
+// Ring-buffer layout:
+//   dirs[start], dirs[start+1], ..., dirs[start+len-2]  (all mod 256)
+//   dirs[start+i] = direction FROM body[i] TO body[i+1]  (toward the tail)
+//   head = cached body[0];  tail = cached body[len-1]
+
+pub const MAX_SNAKE_LEN: usize = 256;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SnakeBody {
+    pub head:  Pos,
+    pub tail:  Pos,
+    pub len:   u16,
+    start: u8,   // ring-buffer start index; arithmetic wraps at 256 naturally via u8
+    dirs:  [u8; MAX_SNAKE_LEN],
+}
+
+impl SnakeBody {
+    /// Build from an ordered slice of adjacent positions (head first).
+    pub fn new(parts: &[Pos]) -> Self {
+        assert!(!parts.is_empty() && parts.len() <= MAX_SNAKE_LEN,
+                "snake body length {} out of range", parts.len());
+        let mut b = SnakeBody {
+            head:  parts[0],
+            tail:  *parts.last().unwrap(),
+            len:   parts.len() as u16,
+            start: 0,
+            dirs:  [0u8; MAX_SNAKE_LEN],
+        };
+        for i in 0..parts.len().saturating_sub(1) {
+            let dx = parts[i + 1].x - parts[i].x;
+            let dy = parts[i + 1].y - parts[i].y;
+            b.dirs[i] = match (dx, dy) {
+                (0, -1) => Dir::Up,
+                (0,  1) => Dir::Down,
+                (-1, 0) => Dir::Left,
+                _       => Dir::Right,
+            }.to_u8();
+        }
+        b
+    }
+
+    #[inline] pub fn head(&self) -> Pos { self.head }
+    #[inline] pub fn tail(&self) -> Pos { self.tail }
+    #[inline] pub fn len(&self) -> usize { self.len as usize }
+    #[inline] pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// Teleport the head to `p` (test-only; does not fix direction encoding).
+    #[inline] pub fn set_head(&mut self, p: Pos) { self.head = p; }
+
+    /// Walk body from head to tail without heap allocation.
+    /// Returns `Pos` by value (unlike VecDeque::iter which yields &Pos).
+    pub fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
+        let mut pos = self.head;
+        let mut i   = 0u16;
+        let dirs: &[u8; MAX_SNAKE_LEN] = &self.dirs;
+        let start = self.start;
+        let len   = self.len;
+        std::iter::from_fn(move || {
+            if i >= len { return None; }
+            let cur = pos;
+            if i + 1 < len {
+                let idx = start.wrapping_add(i as u8) as usize;
+                let (dx, dy) = Dir::from_u8(dirs[idx]).delta();
+                pos = Pos { x: pos.x + dx, y: pos.y + dy };
+            }
+            i += 1;
+            Some(cur)
+        })
+    }
+
+    /// O(i) random access (needed for neck lookup at index 1).
+    pub fn get(&self, i: usize) -> Option<Pos> {
+        if i >= self.len as usize { return None; }
+        let mut pos = self.head;
+        for j in 0..i {
+            let idx = self.start.wrapping_add(j as u8) as usize;
+            let (dx, dy) = Dir::from_u8(self.dirs[idx]).delta();
+            pos = Pos { x: pos.x + dx, y: pos.y + dy };
+        }
+        Some(pos)
+    }
+
+    /// Prepend `new_head`; old head becomes body[1].
+    /// Direction stored: from `new_head` toward old head.
+    #[inline]
+    pub fn push_front(&mut self, new_head: Pos) {
+        let dx = self.head.x - new_head.x;
+        let dy = self.head.y - new_head.y;
+        let d = match (dx, dy) {
+            (0, -1) => Dir::Up,
+            (0,  1) => Dir::Down,
+            (-1, 0) => Dir::Left,
+            _       => Dir::Right,
+        };
+        self.start = self.start.wrapping_sub(1);
+        self.dirs[self.start as usize] = d.to_u8();
+        self.head = new_head;
+        self.len += 1;
+    }
+
+    /// Remove the tail (non-eating move: body shrinks from the back).
+    #[inline]
+    pub fn pop_back(&mut self) {
+        if self.len <= 1 { self.len = 0; return; }
+        // dirs[(start + len - 2) % 256] points from body[len-2] to body[len-1]=tail.
+        // New tail = current tail - that delta.
+        let last = self.start.wrapping_add((self.len - 2) as u8) as usize;
+        let (dx, dy) = Dir::from_u8(self.dirs[last]).delta();
+        self.tail = Pos { x: self.tail.x - dx, y: self.tail.y - dy };
+        self.len -= 1;
+    }
+
+    /// Remove the head (head-destroyed shrink, only when len >= 3).
+    #[inline]
+    pub fn pop_front(&mut self) {
+        if self.len <= 1 { self.len = 0; return; }
+        let (dx, dy) = Dir::from_u8(self.dirs[self.start as usize]).delta();
+        self.head = Pos { x: self.head.x + dx, y: self.head.y + dy };
+        self.start = self.start.wrapping_add(1);
+        self.len -= 1;
+        if self.len == 1 { self.tail = self.head; }
+    }
+
+    /// Shift all body parts by `dy` rows — O(1) (only head and tail move).
+    /// Correct because body positions are encoded as relative direction steps.
+    #[inline]
+    pub fn apply_dy(&mut self, dy: i32) {
+        self.head.y += dy;
+        self.tail.y += dy;
+    }
 }
 
 // ============================================================
 // Snake
 // ============================================================
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Snake {
     pub id: u8,
-    /// body[0] = head, body[last] = tail
-    pub body: VecDeque<Pos>,
+    /// body[0] = head, body[last] = tail — compact direction-sequence, no heap alloc
+    pub body: SnakeBody,
     pub dir: Dir,
     pub player: u8,
 }
 
 impl Snake {
     pub fn new(id: u8, parts: Vec<Pos>, player: u8) -> Self {
-        Snake { id, body: VecDeque::from(parts.clone()),
+        Snake { id, body: SnakeBody::new(&parts),
                 dir: infer_dir(&parts), player }
     }
-    #[inline] pub fn head(&self) -> Pos { self.body[0] }
+    #[inline] pub fn head(&self) -> Pos { self.body.head() }
     #[inline] pub fn len(&self) -> usize { self.body.len() }
 }
 
@@ -142,7 +296,7 @@ pub fn infer_dir(parts: &[Pos]) -> Dir {
 /// Clone cost breakdown:
 ///   grid  — Arc refcount bump only (zero copy, zero alloc)
 ///   food  — memcpy of width*height bytes (~264B for a 24×11 map)
-///   snakes — unavoidable: VecDeque bodies per snake
+///   snakes — memcpy of Vec<Snake>; each Snake is now stack-only (SnakeBody, no heap alloc)
 #[derive(Clone, Debug)]
 pub struct GameState {
     pub width:  i32,
@@ -275,7 +429,7 @@ impl GameState {
             // Phase 4 – mark body cells (TLS, no heap alloc after first call)
             for (idx, s) in self.snakes.iter().enumerate() {
                 let end = if eaters[idx] { s.len() } else { s.len().saturating_sub(1) };
-                s.body.iter().take(end).for_each(|&p| {
+                s.body.iter().take(end).for_each(|p| {
                     if p.in_bounds(self.width, self.height) {
                         body_cells[p.y as usize * w + p.x as usize] = true;
                     }
@@ -294,10 +448,11 @@ impl GameState {
             }
         });
         // head-to-head: O(n²), n ≤ 8 — outside TLS closure (no grid needed)
+        // eaters are NOT exempt: two snakes landing on the same food cell still collide.
         for i in 0..n {
-            if head_destroyed[i] || eaters[i] { continue; }
+            if head_destroyed[i] { continue; }
             for j in (i + 1)..n {
-                if head_destroyed[j] || eaters[j] { continue; }
+                if head_destroyed[j] { continue; }
                 if proposed[i] == proposed[j] {
                     head_destroyed[i] = true;
                     head_destroyed[j] = true;
@@ -338,7 +493,7 @@ impl GameState {
 
         // Phase 10 – border removal
         let (w_i, h_i) = (self.width, self.height);
-        self.snakes.retain(|s| s.body.iter().all(|&p| p.in_bounds(w_i, h_i)));
+        self.snakes.retain(|s| s.body.iter().all(|p| p.in_bounds(w_i, h_i)));
 
         self.turn += 1;
     }
@@ -363,7 +518,7 @@ impl GameState {
                 // Rebuild snake_at for this iteration
                 snake_at.fill(u8::MAX);
                 for (idx, s) in self.snakes.iter().enumerate() {
-                    s.body.iter().for_each(|&p| {
+                    s.body.iter().for_each(|p| {
                         if p.in_bounds(self.width, self.height) {
                             snake_at[p.y as usize * w + p.x as usize] = idx as u8;
                         }
@@ -372,7 +527,7 @@ impl GameState {
 
                 to_fall_len = 0;
                 for (idx, s) in self.snakes.iter().enumerate() {
-                    let grounded = s.body.iter().any(|&p| {
+                    let grounded = s.body.iter().any(|p| {
                         let below_y = p.y + 1;
                         if below_y >= self.height { return true; }
                         if p.x < 0 || p.x >= self.width { return false; }
@@ -390,7 +545,7 @@ impl GameState {
 
                 if to_fall_len == 0 { break; }
                 for &idx in &to_fall[..to_fall_len] {
-                    self.snakes[idx].body.iter_mut().for_each(|p| p.y += 1);
+                    self.snakes[idx].body.apply_dy(1);
                 }
             }
         });
@@ -413,7 +568,7 @@ impl GameState {
         let mut g = vec![u8::MAX; (self.width * self.height) as usize];
         let w = self.width as usize;
         self.snakes.iter().enumerate().for_each(|(idx, s)| {
-            s.body.iter().for_each(|&p| {
+            s.body.iter().for_each(|p| {
                 if p.in_bounds(self.width, self.height) {
                     g[p.y as usize * w + p.x as usize] = idx as u8;
                 }
@@ -437,7 +592,7 @@ impl GameState {
             if g.len() < size { g.resize(size, false); }
             g[..size].fill(false);
             self.snakes.iter().for_each(|s| {
-                s.body.iter().take(s.len().saturating_sub(1)).for_each(|&p| {
+                s.body.iter().take(s.len().saturating_sub(1)).for_each(|p| {
                     if p.in_bounds(self.width, self.height) {
                         g[p.y as usize * w + p.x as usize] = true;
                     }
@@ -494,6 +649,62 @@ impl GameState {
         })
     }
 
+    /// Precompute food distance map ignoring snake bodies (platform walls only).
+    ///
+    /// Runs a single reverse multi-source BFS from all food cells with no body
+    /// obstacles — only fixed platform walls (`self.grid`) block the BFS.
+    /// Result stored in `FOOD_DIST_CACHE` for O(1) lookup per beam node.
+    ///
+    /// The distances are a lower bound on the true obstacle-aware distance;
+    /// the approximation improves naturally at deeper beam depths where bodies
+    /// have vacated.  One full-grid BFS per real game turn (~50µs).
+    pub fn cache_food_dist(&self) {
+        let w    = self.width as usize;
+        let size = w * self.height as usize;
+        let dirs = Dir::all();
+        BFS_SCRATCH.with(|bfs_cell| {
+            let mut guard = bfs_cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_i32(size);
+            let dist  = &mut sc.i32_buf[..size];
+            let queue = &mut sc.queue;
+            dist.fill(-1);
+            queue.clear();
+            for (ci, &b) in self.food.iter().enumerate() {
+                if b { dist[ci] = 0; queue.push_back(ci); }
+            }
+            while let Some(ci) = queue.pop_front() {
+                let d = dist[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &dirs {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || dist[ni] != -1 { continue; }
+                    dist[ni] = d + 1;
+                    queue.push_back(ni);
+                }
+            }
+            FOOD_DIST_CACHE.with(|cache_cell| {
+                let mut cache = cache_cell.borrow_mut();
+                if cache.len() < size { cache.resize(size, -1); }
+                cache[..size].copy_from_slice(&sc.i32_buf[..size]);
+            });
+        });
+    }
+
+    /// O(1) food distance lookup using the map precomputed by `cache_food_dist`.
+    ///
+    /// Returns BFS distance from `pos` to nearest food (root-turn obstacles,
+    /// head cells traversable).  Returns -1 if the cell is unreachable.
+    #[inline]
+    pub fn cached_food_dist(&self, pos: Pos) -> i32 {
+        if !pos.in_bounds(self.width, self.height) { return -1; }
+        let ci = pos.y as usize * self.width as usize + pos.x as usize;
+        FOOD_DIST_CACHE.with(|cell| cell.borrow()[ci])
+    }
+
     /// Zero-alloc variant: reuses SNG_SCRATCH thread-local buffer.
     /// Passes a `&[u8]` snake-index grid to `f` (u8::MAX = no snake).
     pub fn with_snake_grid<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
@@ -504,7 +715,7 @@ impl GameState {
             g[..size].fill(u8::MAX);
             let w = self.width as usize;
             self.snakes.iter().enumerate().for_each(|(idx, s)| {
-                s.body.iter().for_each(|&p| {
+                s.body.iter().for_each(|p| {
                     if p.in_bounds(self.width, self.height) {
                         g[p.y as usize * w + p.x as usize] = idx as u8;
                     }
@@ -521,7 +732,7 @@ impl GameState {
         let mut obs = vec![false; (self.width * self.height) as usize];
         let w = self.width as usize;
         self.snakes.iter().for_each(|s| {
-            s.body.iter().take(s.len().saturating_sub(1)).for_each(|&p| {
+            s.body.iter().take(s.len().saturating_sub(1)).for_each(|p| {
                 if p.in_bounds(self.width, self.height) {
                     obs[p.y as usize * w + p.x as usize] = true;
                 }
@@ -539,6 +750,17 @@ impl GameState {
         below_ci >= self.grid.len() // bottom edge
             || self.grid[below_ci]  // platform
             || pow[below_ci]        // power source
+    }
+
+    /// Like `is_grounded_cell_ci` but also counts any snake body part below
+    /// as support (matches actual gravity: any snake provides support to snakes above it).
+    #[inline]
+    fn is_grounded_cell_ci_sng(&self, ci: usize, w: usize, pow: &[bool], sng: &[u8]) -> bool {
+        let below_ci = ci + w;
+        below_ci >= self.grid.len()   // bottom edge
+            || self.grid[below_ci]    // platform
+            || pow[below_ci]          // power source
+            || sng[below_ci] != u8::MAX // any snake body
     }
 
     /// True if position `p` is supported from below (for external callers).
@@ -663,6 +885,46 @@ impl GameState {
                     if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
                     if targets[ni] { return d + 1; }
                     if !self.is_grounded_cell_ci(ni, w, targets) { continue; }
+                    dist[ni] = d + 1;
+                    queue.push_back(ni);
+                }
+            }
+            i32::MAX
+        })
+    }
+
+    /// Like `bfs_dist_grounded` but also treats any snake body part below a cell
+    /// as support.  Pass `sng = state.snake_grid()` (u8::MAX = empty).
+    /// This fixes the over-pruning bug in heuristic_v1 where the snake's own body
+    /// was not recognised as ground during BFS path evaluation.
+    pub fn bfs_dist_grounded_sng(&self, start: Pos, targets: &[bool], obs: &[bool], sng: &[u8]) -> i32 {
+        let w        = self.width as usize;
+        let start_ci = start.y as usize * w + start.x as usize;
+        if targets[start_ci] { return 0; }
+        let size = w * self.height as usize;
+        let dirs = Dir::all();
+        BFS_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_i32(size);
+            let dist  = &mut sc.i32_buf[..size];
+            let queue = &mut sc.queue;
+            dist.fill(-1);
+            dist[start_ci] = 0;
+            queue.clear();
+            queue.push_back(start_ci);
+
+            while let Some(ci) = queue.pop_front() {
+                let d = dist[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &dirs {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || obs[ni] || dist[ni] != -1 { continue; }
+                    if targets[ni] { return d + 1; }
+                    if !self.is_grounded_cell_ci_sng(ni, w, targets, sng) { continue; }
                     dist[ni] = d + 1;
                     queue.push_back(ni);
                 }
@@ -803,6 +1065,56 @@ impl GameState {
             None
         })
     }
+
+    /// Non-gravity-aware flood-fill liberty count from `head`.
+    ///
+    /// Counts cells reachable from `head` treating only static platform walls
+    /// (`self.grid`) and body obstacles (`obs`) as impassable.  Gravity is
+    /// intentionally ignored: a snake can reach a non-grounded cell so long as
+    /// some part of its body remains grounded — checking exact body support
+    /// would require a per-step simulation, so plain connectivity is the right
+    /// proxy for "how much space can this snake manoeuvre in".
+    ///
+    /// Returns `min(reachable_cells, cap)`.  Use a small cap (e.g. 30) to
+    /// bound cost — if the snake has cap+ open cells it is "free" and the
+    /// exact count does not matter for penalty purposes.
+    ///
+    /// Uses LIB_SCRATCH (TLS, zero alloc after first call).  Safe to call
+    /// inside `with_obstacles` + alongside `bfs_dist` (all different RefCells).
+    pub fn liberty_count(&self, head: Pos, obs: &[bool], cap: usize) -> usize {
+        if !head.in_bounds(self.width, self.height) { return 0; }
+        let w    = self.width as usize;
+        let size = w * self.height as usize;
+        LIB_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let (visited, queue) = &mut *guard;
+            if visited.len() < size { visited.resize(size, false); }
+            let vis = &mut visited[..size];
+            vis.fill(false);
+            queue.clear();
+
+            let start = head.y as usize * w + head.x as usize;
+            vis[start] = true;
+            queue.push_back(start);
+            let mut count = 0usize;
+
+            while let Some(ci) = queue.pop_front() {
+                count += 1;
+                if count >= cap { return cap; }
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &Dir::all() {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if vis[ni] || self.grid[ni] || obs[ni] { continue; }
+                    vis[ni] = true;
+                    queue.push_back(ni);
+                }
+            }
+            count
+        })
+    }
 }
 
 // ============================================================
@@ -907,8 +1219,8 @@ mod tests {
         let mut s = open(10, 10);
         s.snakes.push(snake(0, 0, &[(5, 2), (5, 3), (5, 4)]));
         s.apply_gravity();
-        assert_eq!(s.snakes[0].body[2], Pos::new(5, 9));
-        assert_eq!(s.snakes[0].body[0], Pos::new(5, 7));
+        assert_eq!(s.snakes[0].body.get(2).unwrap(), Pos::new(5, 9));
+        assert_eq!(s.snakes[0].body.head(), Pos::new(5, 7));
     }
 
     #[test]
@@ -919,7 +1231,7 @@ mod tests {
         let mut s = GameState::new(10, 10, grid);
         s.snakes.push(snake(0, 0, &[(5, 2), (5, 3), (5, 4)]));
         s.apply_gravity();
-        assert_eq!(s.snakes[0].body[2], Pos::new(5, 4));
+        assert_eq!(s.snakes[0].body.get(2).unwrap(), Pos::new(5, 4));
     }
 
     #[test]
@@ -930,8 +1242,8 @@ mod tests {
         s.apply_gravity();
         let b = s.snakes.iter().find(|sn| sn.id == 1).unwrap();
         let a = s.snakes.iter().find(|sn| sn.id == 0).unwrap();
-        assert_eq!(b.body[0], Pos::new(5, 4));
-        assert_eq!(a.body[2], Pos::new(5, 3));
+        assert_eq!(b.body.head(), Pos::new(5, 4));
+        assert_eq!(a.body.get(2).unwrap(), Pos::new(5, 3));
     }
 
     #[test]
@@ -939,7 +1251,7 @@ mod tests {
         let mut s = open(5, 3);
         s.snakes.push(snake(0, 0, &[(2, 0)]));
         s.apply_gravity();
-        assert_eq!(s.snakes[0].body[0], Pos::new(2, 2));
+        assert_eq!(s.snakes[0].body.head(), Pos::new(2, 2));
     }
 
     // ── BFS utilities ────────────────────────────────────────────────
@@ -1032,6 +1344,215 @@ mod tests {
 
     // ── clone throughput ─────────────────────────────────────────────
 
+    // ── real game maps from CG logs ───────────────────────────────────
+
+    /// Build a GameState from a raw flat grid string (# = platform, . = empty),
+    /// food list, and snake list (id, player, body).
+    fn from_cg_map(
+        w: i32,
+        h: i32,
+        rows: &[&str],
+        food: &[(i32, i32)],
+        snakes: &[(u8, u8, &[(i32, i32)])],
+    ) -> GameState {
+        let mut grid = vec![false; (w * h) as usize];
+        for (y, row) in rows.iter().enumerate() {
+            for (x, ch) in row.chars().enumerate() {
+                if ch == '#' {
+                    grid[y * w as usize + x] = true;
+                }
+            }
+        }
+        let mut s = GameState::new(w, h, grid);
+        for &(x, y) in food {
+            s.add_food(Pos::new(x, y));
+        }
+        for &(id, player, body) in snakes {
+            s.snakes.push(snake(id, player, body));
+        }
+        s
+    }
+
+    #[test]
+    fn test_map_877959752_initial_state() {
+        // 32×17, game 877959752 — 8 snakes (4 per player), 30 food items
+        let s = from_cg_map(
+            32, 17,
+            &[
+                "..............#..#..............",
+                "..............#..#..............",
+                ".........#............#.........",
+                ".........#............#.........",
+                "................................",
+                ".........#.....##.....#.........",
+                ".........#............#.........",
+                ".......#.......##.......#.......",
+                ".....##........##........##.....",
+                "........#..............#........",
+                "..##...#................#...##..",
+                ".#....#.......#..#.......#....#.",
+                ".#..........##....##..........#.",
+                "###..#.........##.........#..###",
+                "######.....#..####..#.....######",
+                "#######..##############..#######",
+                "################################",
+            ],
+            &[
+                (13,13),(18,13),(21,5),(10,5),(26,9),(5,9),(20,12),(11,12),
+                (7,11),(24,11),(30,6),(1,6),(23,11),(8,11),(8,7),(23,7),
+                (29,3),(2,3),(29,9),(2,9),(4,3),(27,3),(2,7),(29,7),
+                (12,8),(19,8),(0,9),(31,9),(7,13),(24,13),
+            ],
+            &[
+                (0, 0, &[(25,12),(25,13),(25,14)]),
+                (1, 0, &[(14,8),(14,9),(14,10)]),
+                (2, 0, &[(10,12),(10,13),(10,14)]),
+                (3, 0, &[(6,5),(6,6),(6,7)]),
+                (4, 1, &[(6,12),(6,13),(6,14)]),
+                (5, 1, &[(17,8),(17,9),(17,10)]),
+                (6, 1, &[(21,12),(21,13),(21,14)]),
+                (7, 1, &[(25,5),(25,6),(25,7)]),
+            ],
+        );
+        assert_eq!(s.width, 32);
+        assert_eq!(s.height, 17);
+        assert_eq!(s.snakes.len(), 8);
+        assert_eq!(s.food_count, 30);
+        // All snakes start with 3 segments and face Up (head.y < body[1].y)
+        for sn in &s.snakes {
+            assert_eq!(sn.len(), 3);
+            assert_eq!(sn.dir, Dir::Up);
+        }
+        // Spot-check: snake 0 head on a non-platform cell
+        assert!(!s.is_platform(Pos::new(25, 12)));
+        // Bottom row is solid platform
+        assert!(s.is_platform(Pos::new(0, 16)));
+    }
+
+    #[test]
+    fn test_map_877959870_initial_state() {
+        // 42×23, game 877959870 (timeout game) — 8 snakes, 62 food items
+        let s = from_cg_map(
+            42, 23,
+            &[
+                "....................##....................",
+                "..........................................",
+                "..........................................",
+                ".......##........................##.......",
+                "..........................................",
+                "..........................................",
+                "...##................................##...",
+                "....#..........#..........#..........#....",
+                "..........##....#........#....##..........",
+                "................#...##...#................",
+                "..........................................",
+                ".#..................##..................#.",
+                "#...........#.....#....#.....#...........#",
+                "............##....#.##.#....##............",
+                "..#..........#..............#..........#..",
+                ".#......#..#..................#..#......#.",
+                "...##..#..#....................#..#..##...",
+                "..#............##.#....#.##............#..",
+                "#.......#......#...#..#...#......#.......#",
+                "####...#########...#..#...#########...####",
+                "#####..##########........##########..#####",
+                "#####..###########..##..###########..#####",
+                "##########################################",
+            ],
+            &[
+                (10,2),(31,2),(19,2),(22,2),(19,3),(22,3),(9,4),(32,4),
+                (19,5),(22,5),(0,6),(41,6),(6,8),(35,8),(19,8),(22,8),
+                (15,9),(26,9),(6,12),(35,12),(14,12),(27,12),(0,13),(41,13),
+                (20,15),(21,15),(11,16),(30,16),(20,16),(21,16),(3,17),(38,17),
+                (6,17),(35,17),(9,0),(32,0),(13,2),(28,2),(16,3),(25,3),
+                (13,4),(28,4),(0,8),(41,8),(2,8),(39,8),(7,8),(34,8),
+                (13,8),(28,8),(5,10),(36,10),(7,11),(34,11),(14,11),(27,11),
+                (4,12),(37,12),(16,12),(25,12),(13,17),(28,17),
+            ],
+            &[
+                (0, 0, &[(12,16),(12,17),(12,18)]),
+                (1, 0, &[(11,5),(11,6),(11,7)]),
+                (2, 0, &[(23,14),(23,15),(23,16)]),
+                (3, 0, &[(0,15),(0,16),(0,17)]),
+                (4, 1, &[(29,16),(29,17),(29,18)]),
+                (5, 1, &[(30,5),(30,6),(30,7)]),
+                (6, 1, &[(18,14),(18,15),(18,16)]),
+                (7, 1, &[(41,15),(41,16),(41,17)]),
+            ],
+        );
+        assert_eq!(s.width, 42);
+        assert_eq!(s.height, 23);
+        assert_eq!(s.snakes.len(), 8);
+        assert_eq!(s.food_count, 62);
+        for sn in &s.snakes {
+            assert_eq!(sn.len(), 3);
+            assert_eq!(sn.dir, Dir::Up);
+        }
+        // This is the largest map — verify corner platforms
+        assert!(s.is_platform(Pos::new(0, 22)));
+        assert!(s.is_platform(Pos::new(41, 22)));
+    }
+
+    #[test]
+    fn test_map_877977892_initial_state() {
+        // 40×22, game 877977892 — 8 snakes, 54 food items
+        let s = from_cg_map(
+            40, 22,
+            &[
+                ".......#....#...##....##...#....#.......",
+                "........#....#............#....#........",
+                ".........#....................#.........",
+                "..#..................................#..",
+                "...#................................#...",
+                "#................#....#................#",
+                ".##...........###......###...........##.",
+                "...............#........#...............",
+                ".##..................................##.",
+                "..#......#....................#......#..",
+                "..#.....#......................#.....#..",
+                "........................................",
+                "..##..........#.###..###.#..........##..",
+                "..#.....#....#....#..#....#....#.....#..",
+                "....#...#......................#...#....",
+                ".....#.........#........#.........#.....",
+                "...............#........#...............",
+                "#...###.....#..............#.....###...#",
+                "##..##......#....#....#....#......##..##",
+                "###.......####..###..###..####.......###",
+                "###......######################......###",
+                "########################################",
+            ],
+            &[
+                (14,1),(25,1),(3,2),(36,2),(19,2),(20,2),(15,3),(24,3),
+                (17,4),(22,4),(18,4),(21,4),(8,6),(31,6),(16,9),(23,9),
+                (6,11),(33,11),(10,11),(29,11),(10,13),(29,13),(19,13),(20,13),
+                (9,14),(30,14),(18,14),(21,14),(0,15),(39,15),(3,16),(36,16),
+                (6,19),(33,19),(15,2),(24,2),(5,4),(34,4),(5,6),(34,6),
+                (11,8),(28,8),(6,10),(33,10),(0,11),(39,11),(11,11),(28,11),
+                (5,12),(34,12),(0,13),(39,13),(11,15),(28,15),
+            ],
+            &[
+                (0, 0, &[(0,2),(0,3),(0,4)]),
+                (1, 0, &[(9,17),(9,18),(9,19)]),
+                (2, 0, &[(9,6),(9,7),(9,8)]),
+                (3, 0, &[(36,18),(36,19),(36,20)]),
+                (4, 1, &[(39,2),(39,3),(39,4)]),
+                (5, 1, &[(30,17),(30,18),(30,19)]),
+                (6, 1, &[(30,6),(30,7),(30,8)]),
+                (7, 1, &[(3,18),(3,19),(3,20)]),
+            ],
+        );
+        assert_eq!(s.width, 40);
+        assert_eq!(s.height, 22);
+        assert_eq!(s.snakes.len(), 8);
+        assert_eq!(s.food_count, 54);
+        for sn in &s.snakes {
+            assert_eq!(sn.len(), 3);
+            assert_eq!(sn.dir, Dir::Up);
+        }
+        assert!(s.is_platform(Pos::new(0, 21)));
+    }
+
     #[test]
     fn test_clone_throughput() {
         // Regression guard: 100k clones of a realistic 6-snake state must be fast.
@@ -1052,6 +1573,108 @@ mod tests {
         eprintln!("100k GameState::clone() = {}ms", ms);
         assert!(ms < 1000, "clone too slow: {}ms", ms);
     }
+
+    // ── game log replay: 877959752 ────────────────────────────────────
+
+    /// Replay moves from game log 877959752 (32×17, yoannk (P0) vs m315 (P1)).
+    /// Confirms the real-game head-on-food collision at turn 12: our two snakes
+    /// (5 and 7, both P1/m315) both step onto food at (19,8) in the same turn.
+    #[test]
+    fn test_replay_877959752_food_collision() {
+        let mut s = from_cg_map(
+            32, 17,
+            &[
+                "..............#..#..............",
+                "..............#..#..............",
+                ".........#............#.........",
+                ".........#............#.........",
+                "................................",
+                ".........#.....##.....#.........",
+                ".........#............#.........",
+                ".......#.......##.......#.......",
+                ".....##........##........##.....",
+                "........#..............#........",
+                "..##...#................#...##..",
+                ".#....#.......#..#.......#....#.",
+                ".#..........##....##..........#.",
+                "###..#.........##.........#..###",
+                "######.....#..####..#.....######",
+                "#######..##############..#######",
+                "################################",
+            ],
+            &[
+                (13,13),(18,13),(21,5),(10,5),(26,9),(5,9),(20,12),(11,12),
+                (7,11),(24,11),(30,6),(1,6),(23,11),(8,11),(8,7),(23,7),
+                (29,3),(2,3),(29,9),(2,9),(4,3),(27,3),(2,7),(29,7),
+                (12,8),(19,8),(0,9),(31,9),(7,13),(24,13),
+            ],
+            &[
+                (0, 0, &[(25,12),(25,13),(25,14)]),
+                (1, 0, &[(14,8),(14,9),(14,10)]),
+                (2, 0, &[(10,12),(10,13),(10,14)]),
+                (3, 0, &[(6,5),(6,6),(6,7)]),
+                (4, 1, &[(6,12),(6,13),(6,14)]),
+                (5, 1, &[(17,8),(17,9),(17,10)]),
+                (6, 1, &[(21,12),(21,13),(21,14)]),
+                (7, 1, &[(25,5),(25,6),(25,7)]),
+            ],
+        );
+
+        // moves[t] = (p0_actions, p1_actions) from the CG replay log
+        // Format: (snake_id, Dir)
+        let moves: &[&[(u8, Dir)]] = &[
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Right),(3,Dir::Right),(4,Dir::Right),(5,Dir::Right),(6,Dir::Right),(7,Dir::Left )], // t1
+            &[(0,Dir::Up  ),(1,Dir::Up  ),(2,Dir::Down ),(3,Dir::Right),(4,Dir::Up   ),(5,Dir::Right),(6,Dir::Up   ),(7,Dir::Left )], // t2
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Right),(3,Dir::Down ),(4,Dir::Right),(5,Dir::Up   ),(6,Dir::Right),(7,Dir::Down )], // t3
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Right),(3,Dir::Down ),(4,Dir::Down ),(5,Dir::Right),(6,Dir::Right),(7,Dir::Left )], // t4
+            &[(0,Dir::Left),(1,Dir::Left),(2,Dir::Down ),(3,Dir::Left ),(4,Dir::Down ),(5,Dir::Right),(6,Dir::Right),(7,Dir::Left )], // t5
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Left ),(3,Dir::Down ),(4,Dir::Left ),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t6
+            &[(0,Dir::Down),(1,Dir::Right),(2,Dir::Down),(3,Dir::Left ),(4,Dir::Up   ),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t7
+            &[(0,Dir::Left),(1,Dir::Right),(2,Dir::Up  ),(3,Dir::Left ),(4,Dir::Up   ),(5,Dir::Left ),(6,Dir::Right),(7,Dir::Up  )], // t8
+            &[(0,Dir::Down),(1,Dir::Right),(2,Dir::Left),(3,Dir::Left ),(4,Dir::Right),(5,Dir::Left ),(6,Dir::Up   ),(7,Dir::Left )], // t9
+            &[(0,Dir::Left),(1,Dir::Up  ),(2,Dir::Up  ),(3,Dir::Left ),(4,Dir::Right),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t10
+            &[(0,Dir::Up  ),(1,Dir::Up  ),(2,Dir::Up  ),(3,Dir::Left ),(4,Dir::Up   ),(5,Dir::Up   ),(6,Dir::Up   ),(7,Dir::Up  )], // t11
+            &[(0,Dir::Left),(1,Dir::Right),(2,Dir::Up  ),(3,Dir::Up   ),(4,Dir::Right),(5,Dir::Up   ),(6,Dir::Right),(7,Dir::Left )], // t12
+        ];
+
+        let mut collision_turn = None;
+        let mut collision_snakes: (u8, u8) = (0, 0);
+        let mut collision_pos = Pos::new(0, 0);
+
+        for (t, turn_moves) in moves.iter().enumerate() {
+            let acts: HashMap<u8, Dir> = turn_moves.iter().cloned().collect();
+
+            // Before stepping: check if two snakes' proposed heads land on the
+            // same food cell — that's the real-game collision we're capturing.
+            let proposed: Vec<(u8, Pos)> = s.snakes.iter()
+                .filter_map(|sn| {
+                    acts.get(&sn.id).map(|&d| {
+                        let (dx, dy) = d.delta();
+                        (sn.id, sn.head().translate(dx, dy))
+                    })
+                })
+                .collect();
+
+            for i in 0..proposed.len() {
+                for j in (i+1)..proposed.len() {
+                    let pos = proposed[i].1;
+                    if pos == proposed[j].1 && s.food[s.cell_idx(pos)] {
+                        collision_turn  = Some(t + 1);
+                        collision_snakes = (proposed[i].0, proposed[j].0);
+                        collision_pos   = pos;
+                    }
+                }
+            }
+
+            s.step(&acts);
+        }
+
+        // Verified from the real CG replay: our snakes 5 and 7 (both P1/m315) both
+        // step onto food at (19,8) on turn 12 — friendly-fire food collision.
+        assert_eq!(collision_turn,    Some(12),        "collision should be turn 12");
+        assert_eq!(collision_snakes,  (5, 7),          "snakes 5 and 7 collide");
+        assert_eq!(collision_pos,     Pos::new(19, 8), "food cell at (19,8)");
+    }
 }
 
 // ============================================================
@@ -1071,7 +1694,7 @@ pub fn visualize(state: &GameState) -> String {
         display[y][x] = '*';
     }
     for s in &state.snakes {
-        for (i, &p) in s.body.iter().enumerate() {
+        for (i, p) in s.body.iter().enumerate() {
             if p.in_bounds(state.width, state.height) {
                 display[p.y as usize][p.x as usize] =
                     if i == 0 { (b'A' + s.id) as char } else { (b'a' + s.id) as char };
@@ -1171,6 +1794,41 @@ pub fn old_greedy_dirmap(state: &GameState, player: u8) -> DirArr {
     })
 }
 
+/// Fast direction map using precomputed food distance cache.
+///
+/// O(4 × N_snakes) per call vs O(grid_size × N_snakes) for `old_greedy_dirmap`.
+/// For each snake, picks the accessible non-body neighbour with the minimum
+/// `cached_food_dist` value.  Requires `state.cache_food_dist()` to have been
+/// called this turn (done at top of `BeamSearchBot::choose_actions`).
+pub fn greedy_dirmap_fast(state: &GameState, player: u8) -> DirArr {
+    let w = state.width as usize;
+    state.with_obstacles(|obs| {
+        let mut result: DirArr = [None; 8];
+        state.snakes.iter()
+            .filter(|s| s.player == player)
+            .for_each(|s| {
+                let head = s.head();
+                let best = Dir::all().iter()
+                    .filter_map(|&dir| {
+                        let (dx, dy) = dir.delta();
+                        let (nx, ny) = (head.x + dx, head.y + dy);
+                        if nx < 0 || ny < 0 || nx >= state.width || ny >= state.height {
+                            return None;
+                        }
+                        let ni = ny as usize * w + nx as usize;
+                        if state.grid[ni] || obs[ni] { return None; }
+                        let d = state.cached_food_dist(Pos::new(nx as i32, ny as i32));
+                        // d == -1 means food enclosed by walls on all sides — treat as far
+                        Some((dir, if d == -1 { i32::MAX } else { d }))
+                    })
+                    .min_by_key(|&(_, d)| d)
+                    .map(|(dir, _)| dir);
+                result[s.id as usize] = best;
+            });
+        result
+    })
+}
+
 /// Fast variant of `gen_action_combos` returning `Vec<DirArr>` (no HashMap allocs).
 pub fn gen_combos(state: &GameState, player: u8) -> Vec<DirArr> {
     let ids: Vec<u8> = state.snakes.iter()
@@ -1183,7 +1841,7 @@ pub fn gen_combos(state: &GameState, player: u8) -> Vec<DirArr> {
     let mut combos: Vec<DirArr> = vec![[None; 8]];
     for id in ids {
         let s = state.snakes.iter().find(|s| s.id == id).unwrap();
-        let neck = (s.len() >= 2).then(|| s.body[1]);
+        let neck = (s.len() >= 2).then(|| s.body.get(1).unwrap());
         let dirs: Vec<Dir> = Dir::all().iter()
             .filter(|&&d| {
                 let (dx, dy) = d.delta();
@@ -1220,7 +1878,7 @@ pub fn gen_action_combos(state: &GameState, player: u8) -> Vec<HashMap<u8, Dir>>
         let s = state.snakes.iter().find(|s| s.id == id).unwrap();
         // Neck position: the cell the snake cannot re-enter this turn.
         // Only defined for snakes with 2+ segments; 1-segment snakes can go anywhere.
-        let neck = (s.len() >= 2).then(|| s.body[1]);
+        let neck = (s.len() >= 2).then(|| s.body.get(1).unwrap());
         let dirs: Vec<Dir> = Dir::all().iter()
             .filter(|&&d| {
                 let (dx, dy) = d.delta();
@@ -1274,6 +1932,12 @@ fn rank_and_prune_combos(combos: &mut Vec<DirArr>, greedy: &DirArr, state: &Game
 
     // Compute each combo's score once (sort_by_cached_key guarantees this).
     // Negate so that sort_by_cached_key (ascending) gives us best-first order.
+    //
+    // Food bonus: +100 per snake whose proposed head lands on food.
+    // Note: two snakes landing on the same food cell both grow (game mechanic —
+    // simultaneous eat: both receive the food, one food item consumed).
+    // So the +200 double-food combo is genuinely the best combo and correctly
+    // ranks first.
     combos.sort_by_cached_key(|c| {
         let mut score = 0i32;
         for id in 0..8usize {
@@ -1298,6 +1962,7 @@ pub struct BeamSearchBot {
     pub horizon:      usize,
     pub time_limit:   Duration,
     pub heuristic_fn: fn(&GameState, u8) -> i32,
+    pub dirmap_fn:    fn(&GameState, u8) -> DirArr,
 }
 
 impl BeamSearchBot {
@@ -1312,6 +1977,23 @@ impl BeamSearchBot {
             horizon,
             time_limit: Duration::from_millis(time_limit_ms),
             heuristic_fn,
+            dirmap_fn: old_greedy_dirmap,
+        }
+    }
+
+    /// Variant constructor: choose both heuristic and dirmap strategies.
+    pub fn new_full(
+        beam_width: usize,
+        horizon: usize,
+        time_limit_ms: u64,
+        heuristic_fn: fn(&GameState, u8) -> i32,
+        dirmap_fn: fn(&GameState, u8) -> DirArr,
+    ) -> Self {
+        BeamSearchBot {
+            beam_width, horizon,
+            time_limit: Duration::from_millis(time_limit_ms),
+            heuristic_fn,
+            dirmap_fn,
         }
     }
 }
@@ -1339,6 +2021,78 @@ pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
     my * 100 - opp * 80 + food_bonus
 }
 
+/// V6 heuristic: `old_heuristic` base + danger zone penalty.
+///
+/// Penalises each friendly snake whose head is within Manhattan distance 1 or 2
+/// of any opponent head.  No BFS needed — O(N_my × N_opp) per call.
+///
+/// Rationale: the beam search already avoids head-on collisions, but it doesn't
+/// penalise being cornered where the opponent can block us *next* turn.
+/// A cheap proximity penalty nudges snakes to maintain safe separation.
+pub fn heuristic_v6(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my  = state.score(player) as i32;
+    let opp = state.score(1 - player) as i32;
+
+    let food_bonus: i32 = state.with_obstacles(|obs| {
+        state.snakes.iter()
+            .filter(|s| s.player == player)
+            .map(|s| {
+                let d = state.bfs_dist(s.head(), &state.food, obs);
+                if d == i32::MAX { -30 } else { 20 - d.min(20) }
+            })
+            .sum()
+    });
+
+    // Danger zone: penalise friendly heads near opponent heads.
+    // dist=1 → opponent can step onto our head next turn (likely collision).
+    // dist=2 → opponent can reach our head in 2 moves (cornering risk).
+    let danger_penalty: i32 = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|my_snake| {
+            let h = my_snake.head();
+            state.snakes.iter()
+                .filter(|o| o.player != player)
+                .map(|opp_snake| {
+                    let oh = opp_snake.head();
+                    let dist = (h.x - oh.x).abs() + (h.y - oh.y).abs();
+                    if dist <= 1 { -8 } else if dist <= 2 { -4 } else { 0 }
+                })
+                .sum::<i32>()
+        })
+        .sum();
+
+    my * 100 - opp * 80 + food_bonus + danger_penalty
+}
+
+/// V7 heuristic: `old_heuristic` logic with O(1) food distance lookup.
+///
+/// Identical scoring formula to `old_heuristic` (score delta + food proximity
+/// bonus) but reads distances from the `FOOD_DIST_CACHE` precomputed once per
+/// real turn by `state.cache_food_dist_no_obs()`.  Eliminates the per-node BFS
+/// call — from O(grid_size × N_my) down to O(N_my) per heuristic evaluation.
+///
+/// Trade-off: the cached map ignores snake bodies (only platform walls), so
+/// distances are a lower bound.  Relative ordering between states is preserved
+/// well at shallow depths; at deep depths the approximation may diverge slightly.
+pub fn heuristic_v7(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my  = state.score(player) as i32;
+    let opp = state.score(1 - player) as i32;
+
+    let food_bonus: i32 = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|s| {
+            let d = state.cached_food_dist(s.head());
+            if d == -1 { -30 } else { 20 - d.min(20) }
+        })
+        .sum();
+
+    my * 100 - opp * 80 + food_bonus
+}
+
 /// V1 heuristic: score delta + gravity-aware food distance + stability penalty.
 pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
     if !state.snakes_alive(player) { return i32::MIN / 2; }
@@ -1356,7 +2110,10 @@ pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
     let food_bonus: i32 = state.snakes.iter()
         .filter(|s| s.player == player)
         .map(|s| {
-            let d = state.bfs_dist_grounded(s.head(), &state.food, &obs);
+            // bfs_dist_grounded_sng: body-aware variant — snake bodies count as ground,
+            // fixing the over-pruning bug where elevated food was marked unreachable
+            // even when the snake's own body would provide support.
+            let d = state.bfs_dist_grounded_sng(s.head(), &state.food, &obs, &sng);
             if d == i32::MAX { -50 } else { 20 - d.min(20) }
         })
         .sum();
@@ -1371,7 +2128,7 @@ fn stability_score(state: &GameState, player: u8, sng: &[u8], w: usize) -> i32 {
     state.snakes.iter().enumerate()
         .filter(|(_, s)| s.player == player)
         .map(|(snake_idx, s)| {
-            let grounded = s.body.iter().any(|&p| {
+            let grounded = s.body.iter().any(|p| {
                 let below_y = p.y + 1;
                 if below_y >= state.height { return true; }
                 if p.x < 0 || p.x >= state.width { return false; }
@@ -1651,6 +2408,59 @@ pub fn heuristic_v4(state: &GameState, player: u8) -> i32 {
     score_delta + food_bonus + territory * 3 + stability
 }
 
+/// V5 heuristic: `old_heuristic` base + per-snake liberty penalty.
+///
+/// Liberty = number of reachable cells from a snake's head (gravity-aware,
+/// same obstacle set as food BFS).  A snake with fewer than LIBERTY_THRESHOLD
+/// reachable cells is penalised proportionally — detecting trapped / cornered
+/// situations that the food-race signal misses.
+///
+/// Cost: N_my extra liberty_count calls (cap=30 cells each) inside the same
+/// `with_obstacles` closure — each call touches at most 30×4 = 120 cells, so
+/// the overhead per heuristic evaluation is negligible (<5μs on real maps).
+/// Uses LIB_SCRATCH (separate TLS RefCell from BFS_SCRATCH / OBS_SCRATCH).
+pub fn heuristic_v5(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my  = state.score(player) as i32;
+    let opp = state.score(1 - player) as i32;
+
+    // Penalty weights for open-neighbor count (O(4) per snake, zero BFS overhead).
+    // A full BFS cap-20 nearly doubled heuristic cost, eating beam depth.
+    //   0 open moves → snake dies next turn (heavy penalty)
+    //   1 open move  → avoid: fires in normal corridor navigation, hurts more than helps
+    const PENALTY_0_MOVES: i32 = 120;
+
+    let (food_bonus, liberty_penalty): (i32, i32) = state.with_obstacles(|obs| {
+        let mut food_sum = 0i32;
+        let mut lib_pen  = 0i32;
+        let w = state.width as usize;
+        for s in state.snakes.iter().filter(|s| s.player == player) {
+            let d = state.bfs_dist(s.head(), &state.food, obs);
+            food_sum += if d == i32::MAX { -30 } else { 20 - d.min(20) };
+
+            // Count non-blocked 4-directional neighbors from head — O(4), no BFS.
+            let open: usize = Dir::all().iter()
+                .filter(|&&dir| {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (s.head().x + dx, s.head().y + dy);
+                    if nx < 0 || ny < 0 || nx >= state.width || ny >= state.height {
+                        return false;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    !state.grid[ni] && !obs[ni]
+                })
+                .count();
+            if open == 0 {
+                lib_pen -= PENALTY_0_MOVES;
+            }
+        }
+        (food_sum, lib_pen)
+    });
+
+    my * 100 - opp * 80 + food_bonus + liberty_penalty
+}
+
 impl Bot for BeamSearchBot {
     fn name(&self) -> &str { "BeamSearchBot" }
 
@@ -1662,6 +2472,10 @@ impl Bot for BeamSearchBot {
             self.time_limit
         };
         let t0 = Instant::now();
+        // Precompute food distance map (body obstacles, head cells clear) once per
+        // real turn.  heuristic_v7 reads FOOD_DIST_CACHE with O(1) lookups;
+        // other heuristics ignore it.  Cost: ~1 full-grid BFS + Vec<bool> clone (~50µs).
+        state.cache_food_dist();
         // DirArr = [Option<Dir>; 8]: Copy, 8 bytes, zero heap alloc.
         // Avoids ~27K HashMap allocs/turn on 3-snake maps.
         type BeamItem = (DirArr, GameState, i32);
@@ -1678,7 +2492,7 @@ impl Bot for BeamSearchBot {
         let first_combos = gen_combos(state, player);
         if first_combos.is_empty() { return HashMap::new(); }
 
-        let opp = old_greedy_dirmap(state, 1 - player);
+        let opp = (self.dirmap_fn)(state, 1 - player);
         let mut beam: Vec<BeamItem> = first_combos.into_iter().map(|first| {
             let mut ns = state.clone();
             ns.step_arr(&merge_dirs(&first, &opp));
@@ -1692,6 +2506,9 @@ impl Bot for BeamSearchBot {
         // before expanding any state at a deeper level, we return this rather than an
         // empty HashMap (which would silently produce "WAIT" and ignore food/walls).
         let mut result: HashMap<u8, Dir> = dirmap_to_hashmap(player, &beam[0].0);
+
+        let mut total_states: u32 = beam.len() as u32;
+        let mut max_depth: u32 = 0;
 
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
@@ -1714,10 +2531,10 @@ impl Bot for BeamSearchBot {
                 // only when pruning is needed — one extra BFS call is far cheaper
                 // than expanding 3× more combos.
                 if my_combos.len() > COMBO_CAP {
-                    let my_pref = old_greedy_dirmap(&cur, player);
+                    let my_pref = (self.dirmap_fn)(&cur, player);
                     rank_and_prune_combos(&mut my_combos, &my_pref, &cur, player);
                 }
-                let opp_acts  = old_greedy_dirmap(&cur, 1 - player);
+                let opp_acts  = (self.dirmap_fn)(&cur, 1 - player);
                 for combo in my_combos {
                     let mut ns = cur.clone();
                     ns.step_arr(&merge_dirs(&combo, &opp_acts));
@@ -1731,9 +2548,12 @@ impl Bot for BeamSearchBot {
             next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
             next.truncate(self.beam_width);
             result = dirmap_to_hashmap(player, &next[0].0);
+            total_states += next.len() as u32;
+            max_depth = _depth as u32;
             beam = next;
         }
 
+        eprintln!("BS={} MD={} T={}ms", total_states, max_depth, t0.elapsed().as_millis());
         result
     }
 }
