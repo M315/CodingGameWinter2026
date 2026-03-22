@@ -1197,3 +1197,54 @@ Future direction: need a **body-aware cached map** that updates cheaply per beam
 2. **P1**: width benchmark (w160 vs w120 with new fast code) — now much faster to benchmark.
 3. **Submit with compact body** — performance is 3.7× better, consider submitting.
 4. **Tune beam width / horizon** — with 3.7× more compute, w160 horizon 200 may not be optimal. Could push width higher (256, 320?) or test on CG map suite.
+
+---
+
+## 2026-03-22 (continued) — Bitboard BFS + precomputed setup
+
+### What was built
+
+- **`bfs_dist_bits`**: bitboard frontier BFS using `[u64; 16]` with `n_words = ceil(size/64)`.
+  All inner loops bounded by `n` (not hardcoded 16), so small maps (21×11 → n=4) do
+  ~4× less work per BFS depth. Column masks (rcol/lcol) prevent Right/Left row-wrapping.
+- **`BfsBitsSetup` struct + `prepare_bfs_bits` + `bfs_dist_bits_with`**: separates setup
+  (blocked, tbits, rcol, lcol) from the BFS loop. Precompute once per heuristic call,
+  reuse for all N snakes.
+- **`old_heuristic` / `heuristic_v6` updated** to call `prepare_bfs_bits` + `bfs_dist_bits_with`
+  instead of `bfs_dist` per snake.
+
+### Performance results
+
+| Map config | OLD old_heuristic | NEW old_heuristic | Speedup |
+|------------|-------------------|-------------------|---------|
+| 20×15, 1 snake | 1.11 µs | 1.06 µs | +5% |
+| 21×11, 3 snakes | 2.49 µs | 1.50 µs | **+66%** |
+
+The 3-snake case is the main contest map. At 1.50 µs heuristic + 0.84 µs step = 2.34 µs/node
+vs 2.49 + 0.84 = 3.33 µs/node, the beam explores ~42% more nodes per 40ms turn.
+
+### What worked
+
+- **n_words optimization**: without it the 16-word loops wasted time on zero words for
+  small maps (first benchmark showed bitboard was 13% SLOWER than VecDeque).
+  Adding `n = ceil(size/64)` made it faster.
+- **Precomputed setup**: the dominant improvement. For 3 snakes: setup was rebuilt 3× per
+  heuristic call. Prebuilding once saved 2/3 of setup cost → 40% speedup.
+- All 29 unit tests pass; bundle compiles clean.
+
+### What didn't work / gotchas
+
+- **Bitboard alone (16-word, no n_words)**: ~13% slower than VecDeque BFS due to unused
+  word overhead. The n_words fix is required to see a speedup.
+- **Wall-clock game benchmark**: not useful for measuring BFS throughput because games
+  run at a fixed 40ms/turn limit. Use `microbench` (`old_heuristic µs/call`) instead.
+- **Fixed-depth beam in microbench**: uses `heuristic_v1`, not `old_heuristic`, so it
+  doesn't reflect the speedup of the main beam bot.
+
+### Next session priorities
+
+1. **Increase beam width**: with 42% more nodes/turn, try width 200 or 240 (was 160).
+2. **Combo deduplication fix**: cap food-cell bonus at +100 per cell, not +200.
+3. **SnakeVec + SnakeBody**: already committed, neutral performance — no action needed.
+4. **Subtree reuse**: carry beam tree between real game turns (complex, high impact).
+5. **Transposition table**: Zobrist hash GameState → cache (depth, score).
