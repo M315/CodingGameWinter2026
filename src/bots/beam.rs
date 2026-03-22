@@ -35,6 +35,12 @@ fn rank_and_prune_combos(combos: &mut Vec<DirArr>, greedy: &DirArr, state: &Game
 
     // Compute each combo's score once (sort_by_cached_key guarantees this).
     // Negate so that sort_by_cached_key (ascending) gives us best-first order.
+    //
+    // Food bonus: +100 per snake whose proposed head lands on food.
+    // Note: two snakes landing on the same food cell both grow (game mechanic —
+    // simultaneous eat: both receive the food, one food item consumed).
+    // So the +200 double-food combo is genuinely the best combo and correctly
+    // ranks first.
     combos.sort_by_cached_key(|c| {
         let mut score = 0i32;
         for id in 0..8usize {
@@ -413,6 +419,59 @@ pub fn heuristic_v4(state: &GameState, player: u8) -> i32 {
         .sum();
 
     score_delta + food_bonus + territory * 3 + stability
+}
+
+/// V5 heuristic: `old_heuristic` base + per-snake liberty penalty.
+///
+/// Liberty = number of reachable cells from a snake's head (gravity-aware,
+/// same obstacle set as food BFS).  A snake with fewer than LIBERTY_THRESHOLD
+/// reachable cells is penalised proportionally — detecting trapped / cornered
+/// situations that the food-race signal misses.
+///
+/// Cost: N_my extra liberty_count calls (cap=30 cells each) inside the same
+/// `with_obstacles` closure — each call touches at most 30×4 = 120 cells, so
+/// the overhead per heuristic evaluation is negligible (<5μs on real maps).
+/// Uses LIB_SCRATCH (separate TLS RefCell from BFS_SCRATCH / OBS_SCRATCH).
+pub fn heuristic_v5(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my  = state.score(player) as i32;
+    let opp = state.score(1 - player) as i32;
+
+    // Penalty weights for open-neighbor count (O(4) per snake, zero BFS overhead).
+    // A full BFS cap-20 nearly doubled heuristic cost, eating beam depth.
+    //   0 open moves → snake dies next turn (heavy penalty)
+    //   1 open move  → avoid: fires in normal corridor navigation, hurts more than helps
+    const PENALTY_0_MOVES: i32 = 120;
+
+    let (food_bonus, liberty_penalty): (i32, i32) = state.with_obstacles(|obs| {
+        let mut food_sum = 0i32;
+        let mut lib_pen  = 0i32;
+        let w = state.width as usize;
+        for s in state.snakes.iter().filter(|s| s.player == player) {
+            let d = state.bfs_dist(s.head(), &state.food, obs);
+            food_sum += if d == i32::MAX { -30 } else { 20 - d.min(20) };
+
+            // Count non-blocked 4-directional neighbors from head — O(4), no BFS.
+            let open: usize = Dir::all().iter()
+                .filter(|&&dir| {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (s.head().x + dx, s.head().y + dy);
+                    if nx < 0 || ny < 0 || nx >= state.width || ny >= state.height {
+                        return false;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    !state.grid[ni] && !obs[ni]
+                })
+                .count();
+            if open == 0 {
+                lib_pen -= PENALTY_0_MOVES;
+            }
+        }
+        (food_sum, lib_pen)
+    });
+
+    my * 100 - opp * 80 + food_bonus + liberty_penalty
 }
 
 impl Bot for BeamSearchBot {

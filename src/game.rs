@@ -51,6 +51,10 @@ thread_local! {
     // simultaneously with BFS_SCRATCH (all three are accessed together in heuristic_v1).
     static OBS_SCRATCH: RefCell<Vec<bool>> = RefCell::new(Vec::new());
     static SNG_SCRATCH: RefCell<Vec<u8>>   = RefCell::new(Vec::new());
+    // Separate RefCell for liberty_count flood-fill (bool visited grid + queue).
+    // Safe to borrow simultaneously with BFS_SCRATCH, OBS_SCRATCH, SNG_SCRATCH.
+    static LIB_SCRATCH: RefCell<(Vec<bool>, VecDeque<usize>)> =
+        RefCell::new((Vec::new(), VecDeque::new()));
 }
 
 // ============================================================
@@ -290,10 +294,11 @@ impl GameState {
             }
         });
         // head-to-head: O(n²), n ≤ 8 — outside TLS closure (no grid needed)
+        // eaters are NOT exempt: two snakes landing on the same food cell still collide.
         for i in 0..n {
-            if head_destroyed[i] || eaters[i] { continue; }
+            if head_destroyed[i] { continue; }
             for j in (i + 1)..n {
-                if head_destroyed[j] || eaters[j] { continue; }
+                if head_destroyed[j] { continue; }
                 if proposed[i] == proposed[j] {
                     head_destroyed[i] = true;
                     head_destroyed[j] = true;
@@ -848,6 +853,56 @@ impl GameState {
                 }
             }
             None
+        })
+    }
+
+    /// Non-gravity-aware flood-fill liberty count from `head`.
+    ///
+    /// Counts cells reachable from `head` treating only static platform walls
+    /// (`self.grid`) and body obstacles (`obs`) as impassable.  Gravity is
+    /// intentionally ignored: a snake can reach a non-grounded cell so long as
+    /// some part of its body remains grounded — checking exact body support
+    /// would require a per-step simulation, so plain connectivity is the right
+    /// proxy for "how much space can this snake manoeuvre in".
+    ///
+    /// Returns `min(reachable_cells, cap)`.  Use a small cap (e.g. 30) to
+    /// bound cost — if the snake has cap+ open cells it is "free" and the
+    /// exact count does not matter for penalty purposes.
+    ///
+    /// Uses LIB_SCRATCH (TLS, zero alloc after first call).  Safe to call
+    /// inside `with_obstacles` + alongside `bfs_dist` (all different RefCells).
+    pub fn liberty_count(&self, head: Pos, obs: &[bool], cap: usize) -> usize {
+        if !head.in_bounds(self.width, self.height) { return 0; }
+        let w    = self.width as usize;
+        let size = w * self.height as usize;
+        LIB_SCRATCH.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let (visited, queue) = &mut *guard;
+            if visited.len() < size { visited.resize(size, false); }
+            let vis = &mut visited[..size];
+            vis.fill(false);
+            queue.clear();
+
+            let start = head.y as usize * w + head.x as usize;
+            vis[start] = true;
+            queue.push_back(start);
+            let mut count = 0usize;
+
+            while let Some(ci) = queue.pop_front() {
+                count += 1;
+                if count >= cap { return cap; }
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &Dir::all() {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if vis[ni] || self.grid[ni] || obs[ni] { continue; }
+                    vis[ni] = true;
+                    queue.push_back(ni);
+                }
+            }
+            count
         })
     }
 }

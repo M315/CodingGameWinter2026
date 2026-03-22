@@ -9,7 +9,7 @@
 ///   cargo run --bin simulate -- --maps-dir path/to/maps/
 ///   cargo run --bin simulate -- --p0 beam --p1 old_beam --bench 50 --time-limit 10
 ///
-/// Available bots: wait | greedy | beam | beam_v1 | beam_v2 | beam_v3 | beam_v4 | old_beam | mcts
+/// Available bots: wait | greedy | beam | beam_v1 | beam_v2 | beam_v3 | beam_v4 | beam_v5 | old_beam | mcts
 ///
 /// Heuristic versioning protocol:
 ///   • `beam`      always points to the LATEST heuristic
@@ -62,6 +62,7 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
         "beam_v2"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v2)),
         "beam_v3"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v3)),
         "beam_v4"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v4)),
+        "beam_v5"       => Box::new(BeamSearchBot::new(160, 200, time_limit_ms, heuristic_v5)),
         "old_beam"      => Box::new(OldBeamSearchBot::new(120, 200, time_limit_ms)),
         // Width variants for tuning (same heuristic + horizon as `beam`)
         "beam_w60"      => Box::new(BeamSearchBot::new( 60, 200, time_limit_ms, old_heuristic)),

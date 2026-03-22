@@ -1020,3 +1020,53 @@ Always check `agents[].index` before assuming m315 = P0.
 In game 877959752: m315 = P1 (snakes 4-7), yoannk = P0 (snakes 0-3).
 The friendly-fire collision at turn 12 (snakes 5 & 7 → food at (19,8)) is
 **both our snakes** competing for the same food — to investigate tomorrow.
+
+---
+
+## 2026-03-19 — Width tuning + failed combo-fix
+
+### Width tuning results
+
+**Quick maps (1 snake/player):** w80 wins at 60% combined vs old_beam. Narrower = more depth = better.
+
+**Exotec (3 snakes/player):** w160 wins at 70% combined (but benchmark ran with broken combo fix — see below; result may need re-verification).
+
+| Width | Quick maps | Exotec arena |
+|-------|-----------|--------------|
+| w60 | 52.5% | 57.5% |
+| w80 | **60%** | 62.5% |
+| w120 | 50% | 47.5% (invalid—broken combo fix) |
+| w160 | 52.5% | **70%** (possibly confounded) |
+| w200 | 50% | 52.5% |
+
+Submission already uses w=160 (from 2026-03-16 commit). This seems right for real CG maps (4 snakes/player where diversity matters more than depth).
+
+### Failed combo-fix — key lesson (PARTIALLY WRONG — see simulation bug below)
+
+Attempted to fix `rank_and_prune_combos` to only award +100 once per food cell (not +200 for two snakes targeting the same food). **This was a regression**: beam (w120) as P0 dropped from ~72% to 35% vs old_beam on exotec. Reverted.
+
+**NOTE**: The benchmark result was real, but the reasoning was wrong (see simulation bug below). The regression was because two snakes on the same food actually collide and shrink — the combo pruning fix was accidentally correct in intent but the whole approach needs revisiting.
+
+### Simulation bug fixed — two snakes on same food cell collide
+
+**Bug**: The head-to-head collision check in `step_phases_2_to_11` was skipping eaters:
+```rust
+if head_destroyed[i] || eaters[i] { continue; }  // BUG: eaters exempt from head-to-head
+```
+This meant two snakes both moving to the same food cell would **both grow** — an incorrect "double eat" outcome.
+
+**Reality**: In the actual CG game, two snakes landing on the same food cell **collide head-on-head and both shrink** (or are destroyed if len < 3). The food cell does NOT protect from head-on-head collision.
+
+**Fix**: Removed `|| eaters[i]` / `|| eaters[j]` guards from the head-to-head loop. Eaters can now collide head-on-head as normal.
+
+**Consequence for combo pruning**: The +200 bonus for two friendly snakes targeting the same food is now **WRONG** — that combo causes both snakes to collide and shrink, which is the worst outcome, not the best. The +100-per-food scoring should deduplicate: if two friendly snakes target the same food cell, only award +100 once (or even penalise it). This is the OPPOSITE of what we thought last session.
+
+### heuristic_v5 (liberty penalty) — regression
+
+Added 0-open-moves penalty (-120 when snake has no valid adjacent cells). Result: 37.5% combined vs old_beam. Penalty fires too rarely/too late to help. Code kept as versioned experiment (beam_v5 bot) but `beam` alias stays on old_heuristic.
+
+### Next priorities (carried to memory/project_priorities_2026_03_19.md)
+1. Re-run exotec w160 vs w120 with correct (reverted) code
+2. Add BS/MD debug stats to stdout (Psyho-style)
+3. Verify large maps (07, 09) don't timeout with current COMBO_CAP
+4. Investigate danger-zone penalty (opponent heads within 2 cells)

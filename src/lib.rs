@@ -6,7 +6,7 @@ pub use game::*;
 
 // Bot infrastructure and all implementations
 pub use bots::{
-    beam::{heuristic_v1, heuristic_v2, heuristic_v3, heuristic_v4, BeamSearchBot, BeamHashMapBot},
+    beam::{heuristic_v1, heuristic_v2, heuristic_v3, heuristic_v4, heuristic_v5, BeamSearchBot, BeamHashMapBot},
     greedy::GreedyBot,
     mcts::MctsBot,
     old_beam::{OldBeamSearchBot, old_heuristic},
