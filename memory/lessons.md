@@ -1070,3 +1070,32 @@ Added 0-open-moves penalty (-120 when snake has no valid adjacent cells). Result
 2. Add BS/MD debug stats to stdout (Psyho-style)
 3. Verify large maps (07, 09) don't timeout with current COMBO_CAP
 4. Investigate danger-zone penalty (opponent heads within 2 cells)
+
+---
+
+## 2026-03-22 — Debug stats, timeout check, danger zone heuristic
+
+### What was built
+
+- **BS/MD/T debug stats** (`beam.rs`): `choose_actions` now tracks `total_states` and `max_depth`, emitting `BS={n} MD={d} T={ms}ms` to stderr after each turn. Shows up in CG console for diagnosing timeouts. No feature gate needed — stderr is never parsed by the game engine.
+
+- **heuristic_v6 (danger zone penalty)**: Penalises friendly snake heads within Manhattan distance 1 (−8) or 2 (−4) of any opponent head. O(N_my × N_opp), no BFS. Added as `beam_v6` alias.
+
+### What worked
+
+- **Large map timeout check (P3)**: Maps 07 (42×23) and 09 (36×20) now get MD=2–7 within 40ms budget — no timeouts. COMBO_CAP fix from earlier session is holding.
+- **Debug stats in stderr**: Confirmed working; future CG replays will show search depth per turn.
+
+### What didn't work
+
+- **heuristic_v6 (danger zone penalty) — REGRESSION**
+  - exotec (3 snakes/player): ~50% combined with -8/-4 penalty (neutral but noisy)
+  - CG map 06 (real match): only **15% combined** — beam wins 80%
+  - **Root cause**: on real CG maps (4 snakes/player), opponent heads are always nearby, so the penalty fires constantly and overwhelms the food signal. The beam search already simulates opponent moves, so proximity penalty adds no information and just distorts the score.
+  - Tried: -20/-10 (strong regression), -8/-4 (neutral on exotec, still bad on CG map).
+  - Kept as `beam_v6` / `heuristic_v6` for record; `beam` alias stays on `old_heuristic`.
+
+### Remaining from priority queue
+
+- **P1**: Re-run exotec w160 vs w120 with correct code — still skipped, carry forward.
+- **Next heuristic direction to try**: BFS path quality (P6 from last session) — danger-weighted Dijkstra for `bfs_first_step` in opponent model, or corridor detection.

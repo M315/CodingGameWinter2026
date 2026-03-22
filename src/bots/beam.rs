@@ -106,6 +106,51 @@ pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
     my * 100 - opp * 80 + food_bonus
 }
 
+/// V6 heuristic: `old_heuristic` base + danger zone penalty.
+///
+/// Penalises each friendly snake whose head is within Manhattan distance 1 or 2
+/// of any opponent head.  No BFS needed — O(N_my × N_opp) per call.
+///
+/// Rationale: the beam search already avoids head-on collisions, but it doesn't
+/// penalise being cornered where the opponent can block us *next* turn.
+/// A cheap proximity penalty nudges snakes to maintain safe separation.
+pub fn heuristic_v6(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my  = state.score(player) as i32;
+    let opp = state.score(1 - player) as i32;
+
+    let food_bonus: i32 = state.with_obstacles(|obs| {
+        state.snakes.iter()
+            .filter(|s| s.player == player)
+            .map(|s| {
+                let d = state.bfs_dist(s.head(), &state.food, obs);
+                if d == i32::MAX { -30 } else { 20 - d.min(20) }
+            })
+            .sum()
+    });
+
+    // Danger zone: penalise friendly heads near opponent heads.
+    // dist=1 → opponent can step onto our head next turn (likely collision).
+    // dist=2 → opponent can reach our head in 2 moves (cornering risk).
+    let danger_penalty: i32 = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|my_snake| {
+            let h = my_snake.head();
+            state.snakes.iter()
+                .filter(|o| o.player != player)
+                .map(|opp_snake| {
+                    let oh = opp_snake.head();
+                    let dist = (h.x - oh.x).abs() + (h.y - oh.y).abs();
+                    if dist <= 1 { -8 } else if dist <= 2 { -4 } else { 0 }
+                })
+                .sum::<i32>()
+        })
+        .sum();
+
+    my * 100 - opp * 80 + food_bonus + danger_penalty
+}
+
 /// V1 heuristic: score delta + gravity-aware food distance + stability penalty.
 pub fn heuristic_v1(state: &GameState, player: u8) -> i32 {
     if !state.snakes_alive(player) { return i32::MIN / 2; }
@@ -516,6 +561,9 @@ impl Bot for BeamSearchBot {
         // empty HashMap (which would silently produce "WAIT" and ignore food/walls).
         let mut result: HashMap<u8, Dir> = dirmap_to_hashmap(player, &beam[0].0);
 
+        let mut total_states: u32 = beam.len() as u32;
+        let mut max_depth: u32 = 0;
+
         for _depth in 1..self.horizon {
             if t0.elapsed() >= limit { break; }
 
@@ -554,9 +602,12 @@ impl Bot for BeamSearchBot {
             next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
             next.truncate(self.beam_width);
             result = dirmap_to_hashmap(player, &next[0].0);
+            total_states += next.len() as u32;
+            max_depth = _depth as u32;
             beam = next;
         }
 
+        eprintln!("BS={} MD={} T={}ms", total_states, max_depth, t0.elapsed().as_millis());
         result
     }
 }
