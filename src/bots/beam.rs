@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use super::{Bot, GameState, Dir, Pos, DirArr, old_greedy_dirmap, greedy_dirmap_fast,
+use super::{Bot, GameState, Dir, Pos, DirArr, BfsBitsSetup, old_greedy_dirmap, greedy_dirmap_fast,
             gen_combos, dirmap_to_hashmap, greedy_actions, gen_action_combos};
 
 /// Cap on my-player combo count per beam node in the inner loop (depth ≥ 1).
@@ -109,13 +109,13 @@ pub fn old_heuristic(state: &GameState, player: u8) -> i32 {
     let my  = state.score(player) as i32;
     let opp = state.score(1 - player) as i32;
 
-    // with_obstacles reuses OBS_SCRATCH (TLS, zero-alloc).
-    // bfs_dist is called inside the closure — no nesting conflict (different RefCell).
+    // Build bitboard setup once (same blocked/targets/geometry for all snakes).
     let food_bonus: i32 = state.with_obstacles(|obs| {
+        let setup = state.prepare_bfs_bits(&state.food, obs);
         state.snakes.iter()
             .filter(|s| s.player == player)
             .map(|s| {
-                let d = state.bfs_dist(s.head(), &state.food, obs);
+                let d = state.bfs_dist_bits_with(s.head(), &setup);
                 if d == i32::MAX { -30 } else { 20 - d.min(20) }
             })
             .sum()
@@ -139,10 +139,11 @@ pub fn heuristic_v6(state: &GameState, player: u8) -> i32 {
     let opp = state.score(1 - player) as i32;
 
     let food_bonus: i32 = state.with_obstacles(|obs| {
+        let setup = state.prepare_bfs_bits(&state.food, obs);
         state.snakes.iter()
             .filter(|s| s.player == player)
             .map(|s| {
-                let d = state.bfs_dist(s.head(), &state.food, obs);
+                let d = state.bfs_dist_bits_with(s.head(), &setup);
                 if d == i32::MAX { -30 } else { 20 - d.min(20) }
             })
             .sum()

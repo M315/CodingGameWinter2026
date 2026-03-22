@@ -62,6 +62,37 @@ thread_local! {
 }
 
 // ============================================================
+// Bitboard helpers for bfs_dist_bits
+// ============================================================
+
+/// OR-accumulate a left-shift-by-k of `src[0..n]` into `dst[0..n]`.  k must be in 1..64.
+#[inline]
+fn bb_shl_or(src: &[u64; 16], k: usize, dst: &mut [u64; 16], n: usize) {
+    let rk = 64 - k;
+    dst[0] |= src[0] << k;
+    for i in 1..n { dst[i] |= (src[i] << k) | (src[i-1] >> rk); }
+}
+
+/// OR-accumulate a right-shift-by-k of `src[0..n]` into `dst[0..n]`.  k must be in 1..64.
+#[inline]
+fn bb_shr_or(src: &[u64; 16], k: usize, dst: &mut [u64; 16], n: usize) {
+    let lk = 64 - k;
+    dst[n-1] |= src[n-1] >> k;
+    for i in (0..n-1).rev() { dst[i] |= (src[i] >> k) | (src[i+1] << lk); }
+}
+
+/// Precomputed bitboard BFS setup: constant across all snake heads in one heuristic call.
+/// Build with `GameState::prepare_bfs_bits`; query with `bfs_dist_bits_with`.
+#[derive(Clone)]
+pub struct BfsBitsSetup {
+    pub blocked: [u64; 16],  // platform | obs | OOB bits
+    pub tbits:   [u64; 16],  // target (food) bits
+    pub rcol:    [u64; 16],  // right-column anti-wrap mask
+    pub lcol:    [u64; 16],  // left-column anti-wrap mask
+    pub n:       usize,      // number of active 64-bit words = ceil(size/64)
+}
+
+// ============================================================
 // Primitive types
 // ============================================================
 
@@ -917,6 +948,98 @@ impl GameState {
             }
             i32::MAX
         })
+    }
+
+    /// Precompute bitboard BFS setup that is constant across all snakes' BFS calls
+    /// within one heuristic evaluation (same targets, same obs, same grid geometry).
+    ///
+    /// Call once per heuristic then pass to `bfs_dist_bits_with` for each snake.
+    pub fn prepare_bfs_bits(&self, targets: &[bool], obs: &[bool]) -> BfsBitsSetup {
+        let w    = self.width as usize;
+        let size = w * self.height as usize;
+        let n    = (size + 63) >> 6;
+
+        let mut blocked = [!0u64; 16];
+        let mut tbits   = [0u64;  16];
+        for i in 0..size {
+            if !self.grid[i] && !obs[i] { blocked[i >> 6] &= !(1u64 << (i & 63)); }
+            if targets[i]               { tbits  [i >> 6] |=   1u64 << (i & 63);  }
+        }
+
+        let mut rcol = [0u64; 16];
+        let mut lcol = [0u64; 16];
+        for y in 0..self.height as usize {
+            let ri = y * w + (w - 1);
+            let li = y * w;
+            rcol[ri >> 6] |= 1u64 << (ri & 63);
+            lcol[li >> 6] |= 1u64 << (li & 63);
+        }
+
+        BfsBitsSetup { blocked, tbits, rcol, lcol, n }
+    }
+
+    /// Bitboard BFS distance from `start` using a pre-built setup.
+    ///
+    /// Call `prepare_bfs_bits` once per heuristic evaluation, then call this once
+    /// per snake — avoids rebuilding blocked/tbits/rcol/lcol for each snake.
+    pub fn bfs_dist_bits_with(&self, start: Pos, s: &BfsBitsSetup) -> i32 {
+        let w  = self.width as usize;
+        let n  = s.n;
+        let start_ci = start.y as usize * w + start.x as usize;
+        if s.tbits[start_ci >> 6] & (1u64 << (start_ci & 63)) != 0 { return 0; }
+
+        let size = w * self.height as usize;
+        let mut front = [0u64; 16];
+        front[start_ci >> 6] |= 1u64 << (start_ci & 63);
+        let mut visited = front;
+
+        for dist in 1..=size as i32 {
+            let mut exp = [0u64; 16];
+
+            {
+                let w0 = front[0] & !s.rcol[0];
+                exp[0] = w0 << 1;
+                for i in 1..n {
+                    let wi = front[i] & !s.rcol[i];
+                    exp[i] = (wi << 1) | ((front[i-1] & !s.rcol[i-1]) >> 63);
+                }
+            }
+            {
+                let wn = front[n-1] & !s.lcol[n-1];
+                exp[n-1] |= wn >> 1;
+                for i in (0..n-1).rev() {
+                    let wi = front[i] & !s.lcol[i];
+                    exp[i] |= (wi >> 1) | ((front[i+1] & !s.lcol[i+1]) << 63);
+                }
+            }
+            bb_shl_or(&front, w, &mut exp, n);
+            bb_shr_or(&front, w, &mut exp, n);
+
+            let mut any_new = false;
+            let mut new_front = [0u64; 16];
+            for i in 0..n {
+                let cell = exp[i] & !s.blocked[i] & !visited[i];
+                new_front[i] = cell;
+                if cell != 0 { any_new = true; }
+            }
+
+            if !any_new { return i32::MAX; }
+
+            for i in 0..n {
+                if new_front[i] & s.tbits[i] != 0 { return dist; }
+            }
+
+            for i in 0..n { visited[i] |= new_front[i]; }
+            front = new_front;
+        }
+        i32::MAX
+    }
+
+    /// Convenience wrapper: build setup + run single BFS.  Use `bfs_dist_bits_with`
+    /// directly when calling for multiple snakes in the same heuristic.
+    pub fn bfs_dist_bits(&self, start: Pos, targets: &[bool], obs: &[bool]) -> i32 {
+        let setup = self.prepare_bfs_bits(targets, obs);
+        self.bfs_dist_bits_with(start, &setup)
     }
 
     /// Gravity-aware BFS distance: intermediate cells must be statically grounded.
