@@ -64,6 +64,12 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
         "beam_v4"       => Box::new(BeamSearchBot::new(120, 200, time_limit_ms, heuristic_v4)),
         "beam_v5"       => Box::new(BeamSearchBot::new(160, 200, time_limit_ms, heuristic_v5)),
         "beam_v6"       => Box::new(BeamSearchBot::new(160, 200, time_limit_ms, heuristic_v6)),
+        // beam_v7  = fast heuristic (O(1) cache) + fast dirmap (O(4/snake))
+        // beam_v7h = fast heuristic only (old dirmap) — isolates heuristic effect
+        // beam_v7d = fast dirmap only (old heuristic) — isolates dirmap effect
+        "beam_v7"       => Box::new(BeamSearchBot::new_full(160, 200, time_limit_ms, heuristic_v7, greedy_dirmap_fast)),
+        "beam_v7h"      => Box::new(BeamSearchBot::new(160, 200, time_limit_ms, heuristic_v7)),
+        "beam_v7d"      => Box::new(BeamSearchBot::new_full(160, 200, time_limit_ms, old_heuristic, greedy_dirmap_fast)),
         "old_beam"      => Box::new(OldBeamSearchBot::new(120, 200, time_limit_ms)),
         // Width variants for tuning (same heuristic + horizon as `beam`)
         "beam_w60"      => Box::new(BeamSearchBot::new( 60, 200, time_limit_ms, old_heuristic)),

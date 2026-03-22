@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use super::{Bot, GameState, Dir, Pos, DirArr, old_greedy_dirmap, gen_combos, dirmap_to_hashmap,
-            greedy_actions, gen_action_combos};
+use super::{Bot, GameState, Dir, Pos, DirArr, old_greedy_dirmap, greedy_dirmap_fast,
+            gen_combos, dirmap_to_hashmap, greedy_actions, gen_action_combos};
 
 /// Cap on my-player combo count per beam node in the inner loop (depth ≥ 1).
 ///
@@ -65,6 +65,7 @@ pub struct BeamSearchBot {
     pub horizon:      usize,
     pub time_limit:   Duration,
     pub heuristic_fn: fn(&GameState, u8) -> i32,
+    pub dirmap_fn:    fn(&GameState, u8) -> DirArr,
 }
 
 impl BeamSearchBot {
@@ -79,6 +80,23 @@ impl BeamSearchBot {
             horizon,
             time_limit: Duration::from_millis(time_limit_ms),
             heuristic_fn,
+            dirmap_fn: old_greedy_dirmap,
+        }
+    }
+
+    /// Variant constructor: choose both heuristic and dirmap strategies.
+    pub fn new_full(
+        beam_width: usize,
+        horizon: usize,
+        time_limit_ms: u64,
+        heuristic_fn: fn(&GameState, u8) -> i32,
+        dirmap_fn: fn(&GameState, u8) -> DirArr,
+    ) -> Self {
+        BeamSearchBot {
+            beam_width, horizon,
+            time_limit: Duration::from_millis(time_limit_ms),
+            heuristic_fn,
+            dirmap_fn,
         }
     }
 }
@@ -149,6 +167,33 @@ pub fn heuristic_v6(state: &GameState, player: u8) -> i32 {
         .sum();
 
     my * 100 - opp * 80 + food_bonus + danger_penalty
+}
+
+/// V7 heuristic: `old_heuristic` logic with O(1) food distance lookup.
+///
+/// Identical scoring formula to `old_heuristic` (score delta + food proximity
+/// bonus) but reads distances from the `FOOD_DIST_CACHE` precomputed once per
+/// real turn by `state.cache_food_dist_no_obs()`.  Eliminates the per-node BFS
+/// call — from O(grid_size × N_my) down to O(N_my) per heuristic evaluation.
+///
+/// Trade-off: the cached map ignores snake bodies (only platform walls), so
+/// distances are a lower bound.  Relative ordering between states is preserved
+/// well at shallow depths; at deep depths the approximation may diverge slightly.
+pub fn heuristic_v7(state: &GameState, player: u8) -> i32 {
+    if !state.snakes_alive(player) { return i32::MIN / 2; }
+
+    let my  = state.score(player) as i32;
+    let opp = state.score(1 - player) as i32;
+
+    let food_bonus: i32 = state.snakes.iter()
+        .filter(|s| s.player == player)
+        .map(|s| {
+            let d = state.cached_food_dist(s.head());
+            if d == -1 { -30 } else { 20 - d.min(20) }
+        })
+        .sum();
+
+    my * 100 - opp * 80 + food_bonus
 }
 
 /// V1 heuristic: score delta + gravity-aware food distance + stability penalty.
@@ -530,6 +575,10 @@ impl Bot for BeamSearchBot {
             self.time_limit
         };
         let t0 = Instant::now();
+        // Precompute food distance map (body obstacles, head cells clear) once per
+        // real turn.  heuristic_v7 reads FOOD_DIST_CACHE with O(1) lookups;
+        // other heuristics ignore it.  Cost: ~1 full-grid BFS + Vec<bool> clone (~50µs).
+        state.cache_food_dist();
         // DirArr = [Option<Dir>; 8]: Copy, 8 bytes, zero heap alloc.
         // Avoids ~27K HashMap allocs/turn on 3-snake maps.
         type BeamItem = (DirArr, GameState, i32);
@@ -546,7 +595,7 @@ impl Bot for BeamSearchBot {
         let first_combos = gen_combos(state, player);
         if first_combos.is_empty() { return HashMap::new(); }
 
-        let opp = old_greedy_dirmap(state, 1 - player);
+        let opp = (self.dirmap_fn)(state, 1 - player);
         let mut beam: Vec<BeamItem> = first_combos.into_iter().map(|first| {
             let mut ns = state.clone();
             ns.step_arr(&merge_dirs(&first, &opp));
@@ -585,10 +634,10 @@ impl Bot for BeamSearchBot {
                 // only when pruning is needed — one extra BFS call is far cheaper
                 // than expanding 3× more combos.
                 if my_combos.len() > COMBO_CAP {
-                    let my_pref = old_greedy_dirmap(&cur, player);
+                    let my_pref = (self.dirmap_fn)(&cur, player);
                     rank_and_prune_combos(&mut my_combos, &my_pref, &cur, player);
                 }
-                let opp_acts  = old_greedy_dirmap(&cur, 1 - player);
+                let opp_acts  = (self.dirmap_fn)(&cur, 1 - player);
                 for combo in my_combos {
                     let mut ns = cur.clone();
                     ns.step_arr(&merge_dirs(&combo, &opp_acts));

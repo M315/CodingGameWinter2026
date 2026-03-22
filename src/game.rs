@@ -55,6 +55,10 @@ thread_local! {
     // Safe to borrow simultaneously with BFS_SCRATCH, OBS_SCRATCH, SNG_SCRATCH.
     static LIB_SCRATCH: RefCell<(Vec<bool>, VecDeque<usize>)> =
         RefCell::new((Vec::new(), VecDeque::new()));
+    // Cached food distance map (no snake-body obstacles, only platform walls).
+    // Populated once per real turn by cache_food_dist_no_obs(); read O(1) by
+    // cached_food_dist().  Separate from BFS_SCRATCH so it persists across BFS calls.
+    static FOOD_DIST_CACHE: RefCell<Vec<i32>> = RefCell::new(Vec::new());
 }
 
 // ============================================================
@@ -493,6 +497,62 @@ impl GameState {
             }
             f(&sc.i32_buf[..size])
         })
+    }
+
+    /// Precompute food distance map ignoring snake bodies (platform walls only).
+    ///
+    /// Runs a single reverse multi-source BFS from all food cells with no body
+    /// obstacles — only fixed platform walls (`self.grid`) block the BFS.
+    /// Result stored in `FOOD_DIST_CACHE` for O(1) lookup per beam node.
+    ///
+    /// The distances are a lower bound on the true obstacle-aware distance;
+    /// the approximation improves naturally at deeper beam depths where bodies
+    /// have vacated.  One full-grid BFS per real game turn (~50µs).
+    pub fn cache_food_dist(&self) {
+        let w    = self.width as usize;
+        let size = w * self.height as usize;
+        let dirs = Dir::all();
+        BFS_SCRATCH.with(|bfs_cell| {
+            let mut guard = bfs_cell.borrow_mut();
+            let sc = &mut *guard;
+            sc.ensure_i32(size);
+            let dist  = &mut sc.i32_buf[..size];
+            let queue = &mut sc.queue;
+            dist.fill(-1);
+            queue.clear();
+            for (ci, &b) in self.food.iter().enumerate() {
+                if b { dist[ci] = 0; queue.push_back(ci); }
+            }
+            while let Some(ci) = queue.pop_front() {
+                let d = dist[ci];
+                let (cx, cy) = ((ci % w) as i32, (ci / w) as i32);
+                for &dir in &dirs {
+                    let (dx, dy) = dir.delta();
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= self.width || ny >= self.height { continue; }
+                    let ni = ny as usize * w + nx as usize;
+                    if self.grid[ni] || dist[ni] != -1 { continue; }
+                    dist[ni] = d + 1;
+                    queue.push_back(ni);
+                }
+            }
+            FOOD_DIST_CACHE.with(|cache_cell| {
+                let mut cache = cache_cell.borrow_mut();
+                if cache.len() < size { cache.resize(size, -1); }
+                cache[..size].copy_from_slice(&sc.i32_buf[..size]);
+            });
+        });
+    }
+
+    /// O(1) food distance lookup using the map precomputed by `cache_food_dist`.
+    ///
+    /// Returns BFS distance from `pos` to nearest food (root-turn obstacles,
+    /// head cells traversable).  Returns -1 if the cell is unreachable.
+    #[inline]
+    pub fn cached_food_dist(&self, pos: Pos) -> i32 {
+        if !pos.in_bounds(self.width, self.height) { return -1; }
+        let ci = pos.y as usize * self.width as usize + pos.x as usize;
+        FOOD_DIST_CACHE.with(|cell| cell.borrow()[ci])
     }
 
     /// Zero-alloc variant: reuses SNG_SCRATCH thread-local buffer.

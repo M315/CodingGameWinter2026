@@ -89,6 +89,41 @@ pub fn old_greedy_dirmap(state: &GameState, player: u8) -> DirArr {
     })
 }
 
+/// Fast direction map using precomputed food distance cache.
+///
+/// O(4 × N_snakes) per call vs O(grid_size × N_snakes) for `old_greedy_dirmap`.
+/// For each snake, picks the accessible non-body neighbour with the minimum
+/// `cached_food_dist` value.  Requires `state.cache_food_dist()` to have been
+/// called this turn (done at top of `BeamSearchBot::choose_actions`).
+pub fn greedy_dirmap_fast(state: &GameState, player: u8) -> DirArr {
+    let w = state.width as usize;
+    state.with_obstacles(|obs| {
+        let mut result: DirArr = [None; 8];
+        state.snakes.iter()
+            .filter(|s| s.player == player)
+            .for_each(|s| {
+                let head = s.head();
+                let best = Dir::all().iter()
+                    .filter_map(|&dir| {
+                        let (dx, dy) = dir.delta();
+                        let (nx, ny) = (head.x + dx, head.y + dy);
+                        if nx < 0 || ny < 0 || nx >= state.width || ny >= state.height {
+                            return None;
+                        }
+                        let ni = ny as usize * w + nx as usize;
+                        if state.grid[ni] || obs[ni] { return None; }
+                        let d = state.cached_food_dist(Pos::new(nx as i32, ny as i32));
+                        // d == -1 means food enclosed by walls on all sides — treat as far
+                        Some((dir, if d == -1 { i32::MAX } else { d }))
+                    })
+                    .min_by_key(|&(_, d)| d)
+                    .map(|(dir, _)| dir);
+                result[s.id as usize] = best;
+            });
+        result
+    })
+}
+
 /// Fast variant of `gen_action_combos` returning `Vec<DirArr>` (no HashMap allocs).
 pub fn gen_combos(state: &GameState, player: u8) -> Vec<DirArr> {
     let ids: Vec<u8> = state.snakes.iter()

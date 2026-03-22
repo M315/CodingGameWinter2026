@@ -1099,3 +1099,49 @@ Added 0-open-moves penalty (-120 when snake has no valid adjacent cells). Result
 
 - **P1**: Re-run exotec w160 vs w120 with correct code — still skipped, carry forward.
 - **Next heuristic direction to try**: BFS path quality (P6 from last session) — danger-weighted Dijkstra for `bfs_first_step` in opponent model, or corridor detection.
+
+---
+
+## 2026-03-22 — Precomputed food distance cache + fast dirmap
+
+### What was built
+
+- **`cache_food_dist()` in `game.rs`**: Reverse multi-source BFS from all food cells (no snake-body obstacles, platform walls only). Runs once per real turn, stores in `FOOD_DIST_CACHE` TLS. O(grid_size) amortised over all beam nodes.
+- **`cached_food_dist(pos)`**: O(1) TLS lookup — used by `heuristic_v7`.
+- **`greedy_dirmap_fast()`**: O(4 × N_snakes) direction map using cached distances instead of per-snake BFS. Picks accessible neighbour with min cached distance.
+- **`BeamSearchBot::new_full()`**: Accepts both `heuristic_fn` and `dirmap_fn`, allowing independent selection of strategies.
+- **`beam_v7`** = heuristic_v7 + greedy_dirmap_fast. **`beam_v7h`** = heuristic_v7 only. **`beam_v7d`** = greedy_dirmap_fast only. All added as simulate.rs entries.
+- **Debug stats** (`choose_actions`): calls `state.cache_food_dist()` unconditionally at start of each turn (negligible overhead, enables heuristic_v7 for any bot).
+
+### What worked (partially)
+
+The cache gives **2-5 extra depth levels** on smaller maps (exotec 21×11, CG map 06 32×17):
+- **beam_v7 on exotec**: +34% combined win rate vs baseline
+- **beam_v7 on CG 06**: +18% combined win rate vs baseline
+
+On exotec, `old_greedy_dirmap` BFS was the heuristic bottleneck. With both BFS paths replaced, MD went from 6-9 → 11-13.
+
+### What didn't work
+
+**No-obs approximation fails on large open maps** (CG 07 42×23, CG 08 40×22):
+- **beam_v7 on CG 07**: −45% combined (deeper but wronger search loses to shallower correct search)
+- **beam_v7 on CG 08**: −65% combined
+
+**Root cause**: On large maps with few internal walls, snake bodies are the main routing obstacle. Ignoring them makes food appear much closer than it is → beam prefers paths that are actually blocked → wrong action chosen. The depth gain doesn't compensate.
+
+**Isolation tests** (beam_v7h vs beam_v7d on maps 07/08):
+- Both components independently hurt on CG 07 (−50% each)
+- Fast heuristic alone: −70% on CG 08; fast dirmap alone: −15% on CG 08
+- The fast heuristic is the worse offender on large maps
+
+### Conclusion
+
+The cache infrastructure is sound and reusable. The no-obs approximation works when snake bodies are a small fraction of obstacles (small maps, dense food). **`beam` stays on old_heuristic + old_greedy_dirmap** — the safe defaults win across all map sizes.
+
+Future direction: need a **body-aware cached map** that updates cheaply per beam node, OR **compact state representation** (direction-sequence snake bodies) to make clone fast enough that BFS per node is affordable at deeper search depths.
+
+### Next session priorities
+
+1. **Compact snake body representation** (direction-sequence + bitfield) — reduces clone cost 5-7×, enables deeper search without approximation. Most impactful unexplored change.
+2. **Combo deduplication fix** — `rank_and_prune_combos` awards +200 for two friendly snakes targeting same food cell, but they actually collide. Deduplicate to +100 max per food cell.
+3. **P1**: width benchmark (w160 vs w120) — carry forward.
