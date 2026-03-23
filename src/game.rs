@@ -400,6 +400,10 @@ pub struct GameState {
     /// Flat row-major platform grid. Wrapped in Arc — never mutates after
     /// construction, so all beam-search clones share the same allocation.
     pub grid: Arc<Vec<bool>>,
+    /// Precomputed bitboard of blocked cells (walls + OOB bits set, open cells clear).
+    /// Same Arc trick: zero-copy on clone, computed once in new().
+    /// Used by prepare_bfs_bits to avoid re-reading self.grid on every heuristic call.
+    pub grid_bits: Arc<[u64; 32]>,
     /// Live food/power sources as a flat bool grid (same dimensions as grid).
     /// Replaces HashSet<Pos>: lookup is a direct array index, clone is memcpy.
     pub food: Vec<bool>,
@@ -413,9 +417,24 @@ pub struct GameState {
 impl GameState {
     pub fn new(width: i32, height: i32, grid: Vec<bool>) -> Self {
         let size = (width * height) as usize;
+        let n    = (size + 63) >> 6;
+        // Precompute blocked bitboard: all bits set (OOB + walls), open cells cleared.
+        let mut gb = [!0u64; 32];
+        for i in 0..size {
+            if !grid[i] { gb[i >> 6] &= !(1u64 << (i & 63)); }
+        }
+        // Clear padding bits beyond `size` so they don't accidentally block BFS expansion.
+        if n < 32 {
+            let used_in_last = size & 63;
+            if used_in_last > 0 {
+                gb[n - 1] &= (1u64 << used_in_last) - 1;
+            }
+            for word in &mut gb[n..32] { *word = 0; }
+        }
         GameState {
             width, height,
             grid: Arc::new(grid),
+            grid_bits: Arc::new(gb),
             food: vec![false; size],
             food_count: 0,
             snakes: SnakeVec::new(),
@@ -960,11 +979,13 @@ impl GameState {
         let n    = (size + 63) >> 6;
         assert!(n <= 32, "map too large for bitboard BFS: {} cells (max 2048)", size);
 
-        let mut blocked = [!0u64; 32];
-        let mut tbits   = [0u64;  32];
+        // Start from precomputed grid_bits (walls + OOB already set, open cells cleared).
+        // Only need to OR in the obs bits and build tbits — no self.grid[] reads.
+        let mut blocked = *self.grid_bits;
+        let mut tbits   = [0u64; 32];
         for i in 0..size {
-            if !self.grid[i] && !obs[i] { blocked[i >> 6] &= !(1u64 << (i & 63)); }
-            if targets[i]               { tbits  [i >> 6] |=   1u64 << (i & 63);  }
+            if obs[i]     { blocked[i >> 6] |=  1u64 << (i & 63); }
+            if targets[i] { tbits  [i >> 6] |=  1u64 << (i & 63); }
         }
 
         let mut rcol = [0u64; 32];
