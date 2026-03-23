@@ -1248,3 +1248,81 @@ vs 2.49 + 0.84 = 3.33 µs/node, the beam explores ~42% more nodes per 40ms turn.
 3. **SnakeVec + SnakeBody**: already committed, neutral performance — no action needed.
 4. **Subtree reuse**: carry beam tree between real game turns (complex, high impact).
 5. **Transposition table**: Zobrist hash GameState → cache (depth, score).
+
+---
+
+## 2026-03-23 — Width benchmark, lazy eval, danger zone, fast dirmap experiments
+
+### What was done
+
+**P1: w160 vs w120 on exotec (re-run with correct code)**
+- Previous result (70% w160) was invalid (measured during broken combo-fix regression)
+- Correct result: w160 = 51.7%, w120 = 46.7% over 60 games — statistical noise
+- **Conclusion**: w160 ≈ w120 on exotec. Submission stays at w=160. No change needed.
+
+**P3: Timeout check on large maps**
+- Maps 07 (42×23) and 09 (36×20): 5 games each vs greedy, no timeouts
+- COMBO_CAP=9 is keeping depth manageable on large maps
+
+**grid_bits precomputed Arc (committed)**
+- Precomputes blocked bitboard in GameState::new(); avoids re-reading self.grid[] on every BFS call
+- Committed as standalone optimization
+
+**beam_lazy: lazy heuristic evaluation**
+- Implementation: use heuristic_v7 (O(1) cache) as pre-filter for 2×beam_width candidates,
+  re-score survivors with full old_heuristic
+- Result: +1.6 avg depth (7.75 vs 6.12), but win rate is NEUTRAL (48.3% vs 48.3%)
+- **Why**: quality loss from v7 staleness at deep depths exactly cancels depth gain
+- Kept as experimental `beam_lazy` variant for future tuning, main beam unchanged
+
+**beam_v7d: fast dirmap (O(1) cache lookups instead of O(grid) BFS)**
+- Avg depth: 8.5 vs 6.1 baseline (+39% more depth)
+- Exotec: 50% vs 45% → slight win
+- Default maps (all 9): 36.7% vs 50% → clear loss
+- **Conclusion**: fast dirmap hurts accuracy of opponent model on simple 1-2 snake maps.
+  Net result across all maps: negative. Not adopted.
+
+**danger zone penalty in rank_and_prune_combos**
+- Added: -15 penalty per snake adjacent to opponent head, -8 within dist 2
+- Tested on exotec: beam = 40%, beam_nodanger = 55%
+- **Clear regression**: excluding combos near opponent heads prevents exploration of
+  valid aggressive moves (cornering opponents). Reverted to danger_zone_pruning=false default.
+- Note: danger zone AS HEURISTIC PENALTY (heuristic_v6) was also a regression.
+  This pattern suggests danger zone signals are unreliable at the resolution we're working at.
+
+### Key findings
+
+1. **Depth alone doesn't win**: both lazy eval (+1.6 depth) and fast dirmap (+2.4 depth)
+   failed to improve win rate. The quality of evaluation per node matters more than depth.
+   
+2. **Opponent model accuracy matters**: fast dirmap's stale O(1) cache hurts more on
+   simple maps where opponent prediction accuracy is critical.
+
+3. **Danger zone is anti-pattern**: penalizing moves near opponent heads (whether in
+   heuristic or combo pruning) consistently causes regression. The bot should be allowed
+   to make aggressive head-proximity plays.
+
+4. **Current bottleneck is probably heuristic QUALITY, not SPEED**: adding depth doesn't
+   help because the heuristic can't correctly evaluate states at depth 7-8.
+
+### What's still available (updated backlog)
+
+High priority:
+- Transposition table (Zobrist hash): avoid re-evaluating identical states
+- Adaptive beam width (wider on simple maps, narrower on complex — to gain depth)
+
+Medium priority:
+- Better heuristic signal for 3-snake endgame scenarios
+- Early termination: if only 1 valid combo, skip expansion and carry forward
+
+Abandoned/regression:
+- Subtree reuse: complex implementation, opponent model uncertainty limits benefit
+- Lazy eval variants: tested, neutral to negative
+- Danger zone penalty: consistently regresses
+- Fast dirmap: hurts simple maps
+
+### Next session priorities
+
+1. Transposition table with Zobrist hashing
+2. Adaptive beam width: try w=80 on 1-2 snake maps, w=200 on 3+ snake maps
+3. Find a better heuristic signal (not danger zone, not territory — something else)

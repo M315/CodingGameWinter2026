@@ -21,17 +21,33 @@ const COMBO_CAP: usize = 9;
 /// Score per combo:
 ///   +100 per snake whose proposed head lands on food (never prune these)
 ///   +2   per snake whose direction matches its `greedy` preference
+///   -15  per snake whose proposed head is adjacent (dist ≤ 1) to an opponent head
+///   -8   per snake whose proposed head is within dist 2 of an opponent head
+///
+/// The danger penalties steer away from head-on scenarios in combo pruning —
+/// cheaper and earlier than the heuristic's post-step evaluation.
+/// O(N_my × N_opp) per combo, no BFS.
 ///
 /// Uses `sort_by_cached_key` so the score function runs exactly once per combo.
-fn rank_and_prune_combos(combos: &mut Vec<DirArr>, greedy: &DirArr, state: &GameState, player: u8) {
+fn rank_and_prune_combos(combos: &mut Vec<DirArr>, greedy: &DirArr, state: &GameState, player: u8, danger: bool) {
     if combos.len() <= COMBO_CAP { return; }
     let w = state.width as usize;
 
-    // Precompute head positions to avoid repeated Vec search inside the key fn.
+    // Precompute head positions for my snakes and opponent heads.
     let mut heads: [Option<Pos>; 8] = [None; 8];
     state.snakes.iter()
         .filter(|s| s.player == player)
         .for_each(|s| heads[s.id as usize] = Some(s.head()));
+
+    // Collect opponent heads only when danger zone penalty is active (avoids alloc otherwise).
+    let opp_heads: Vec<Pos> = if danger {
+        state.snakes.iter()
+            .filter(|s| s.player != player)
+            .map(|s| s.head())
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Compute each combo's score once (sort_by_cached_key guarantees this).
     // Negate so that sort_by_cached_key (ascending) gives us best-first order.
@@ -52,6 +68,15 @@ fn rank_and_prune_combos(combos: &mut Vec<DirArr>, greedy: &DirArr, state: &Game
                     && state.food[ny as usize * w + nx as usize] {
                     score += 100;
                 }
+                // Danger zone: penalise moving toward an opponent head.
+                if danger {
+                    let new_head = Pos { x: nx, y: ny };
+                    for &oh in &opp_heads {
+                        let dist = (new_head.x - oh.x).abs() + (new_head.y - oh.y).abs();
+                        if dist <= 1 { score -= 15; }
+                        else if dist <= 2 { score -= 8; }
+                    }
+                }
             }
             if greedy[id] == Some(dir) { score += 2; }
         }
@@ -71,7 +96,11 @@ pub struct BeamSearchBot {
     /// `2 × beam_width`; only survivors are re-scored with the full `heuristic_fn`.
     /// Reduces expensive BFS calls by ~78% (keeps 2W out of 9W candidates).
     /// May cause minor quality loss when the cache is stale at deep depths.
-    pub lazy_eval:    bool,
+    pub lazy_eval:           bool,
+    /// Danger zone penalty in combo pruning: penalise combos that move a friendly
+    /// snake adjacent to an opponent head (-15) or within dist 2 (-8).
+    /// Only fires on 3+ snake maps where COMBO_CAP kicks in.
+    pub danger_zone_pruning: bool,
 }
 
 impl BeamSearchBot {
@@ -88,6 +117,7 @@ impl BeamSearchBot {
             heuristic_fn,
             dirmap_fn: old_greedy_dirmap,
             lazy_eval: false,
+            danger_zone_pruning: false,
         }
     }
 
@@ -105,6 +135,7 @@ impl BeamSearchBot {
             heuristic_fn,
             dirmap_fn,
             lazy_eval: false,
+            danger_zone_pruning: false,
         }
     }
 
@@ -122,6 +153,7 @@ impl BeamSearchBot {
             heuristic_fn,
             dirmap_fn: old_greedy_dirmap,
             lazy_eval: true,
+            danger_zone_pruning: false,
         }
     }
 }
@@ -661,7 +693,7 @@ impl Bot for BeamSearchBot {
                 // than expanding 3× more combos.
                 if my_combos.len() > COMBO_CAP {
                     let my_pref = (self.dirmap_fn)(&cur, player);
-                    rank_and_prune_combos(&mut my_combos, &my_pref, &cur, player);
+                    rank_and_prune_combos(&mut my_combos, &my_pref, &cur, player, self.danger_zone_pruning);
                 }
                 let opp_acts  = (self.dirmap_fn)(&cur, 1 - player);
                 for combo in my_combos {

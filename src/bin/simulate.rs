@@ -79,6 +79,9 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
         // Lazy heuristic eval: cheap O(1) pre-filter, full BFS re-score for survivors.
         // beam_lazy = w160, old_heuristic with lazy eval enabled
         "beam_lazy"     => Box::new(BeamSearchBot::new_lazy(160, 200, time_limit_ms, old_heuristic)),
+        // beam_nodanger = same as beam but without danger zone penalty in combo pruning.
+        // Used to isolate the effect of danger_zone_pruning vs plain combo pruning.
+        "beam_nodanger" => { let mut b = BeamSearchBot::new(160, 200, time_limit_ms, old_heuristic); b.danger_zone_pruning = false; Box::new(b) },
         // Same heuristic as old beam_v1 but uses gen_action_combos + step(&HashMap) — benchmark only.
         "beam_hashmap"  => Box::new(BeamHashMapBot::new(120, 200, time_limit_ms, heuristic_v1)),
         "mcts"          => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
