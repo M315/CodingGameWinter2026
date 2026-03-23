@@ -66,6 +66,12 @@ pub struct BeamSearchBot {
     pub time_limit:   Duration,
     pub heuristic_fn: fn(&GameState, u8) -> i32,
     pub dirmap_fn:    fn(&GameState, u8) -> DirArr,
+    /// Lazy heuristic evaluation: use `heuristic_v7` (O(1) food-dist cache) as a
+    /// cheap pre-filter.  All expanded nodes are scored cheaply and truncated to
+    /// `2 × beam_width`; only survivors are re-scored with the full `heuristic_fn`.
+    /// Reduces expensive BFS calls by ~78% (keeps 2W out of 9W candidates).
+    /// May cause minor quality loss when the cache is stale at deep depths.
+    pub lazy_eval:    bool,
 }
 
 impl BeamSearchBot {
@@ -81,6 +87,7 @@ impl BeamSearchBot {
             time_limit: Duration::from_millis(time_limit_ms),
             heuristic_fn,
             dirmap_fn: old_greedy_dirmap,
+            lazy_eval: false,
         }
     }
 
@@ -97,6 +104,24 @@ impl BeamSearchBot {
             time_limit: Duration::from_millis(time_limit_ms),
             heuristic_fn,
             dirmap_fn,
+            lazy_eval: false,
+        }
+    }
+
+    /// Lazy-eval variant: cheap pre-filter with heuristic_v7, full re-score for
+    /// survivors.  Use for benchmarking; switch main bot if it wins.
+    pub fn new_lazy(
+        beam_width: usize,
+        horizon: usize,
+        time_limit_ms: u64,
+        heuristic_fn: fn(&GameState, u8) -> i32,
+    ) -> Self {
+        BeamSearchBot {
+            beam_width, horizon,
+            time_limit: Duration::from_millis(time_limit_ms),
+            heuristic_fn,
+            dirmap_fn: old_greedy_dirmap,
+            lazy_eval: true,
         }
     }
 }
@@ -642,7 +667,14 @@ impl Bot for BeamSearchBot {
                 for combo in my_combos {
                     let mut ns = cur.clone();
                     ns.step_arr(&merge_dirs(&combo, &opp_acts));
-                    let score = (self.heuristic_fn)(&ns, player);
+                    let score = if self.lazy_eval {
+                        // Cheap pre-filter score: use O(1) cache heuristic.
+                        // States will be re-scored with full heuristic_fn after
+                        // the pre-filter truncation below.
+                        heuristic_v7(&ns, player)
+                    } else {
+                        (self.heuristic_fn)(&ns, player)
+                    };
                     next.push((first_acts, ns, score)); // first_acts is Copy
                 }
             }
@@ -650,6 +682,17 @@ impl Bot for BeamSearchBot {
             // the previous depth and stop — beam is already empty from mem::take.
             if next.is_empty() { break; }
             next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
+            if self.lazy_eval {
+                // Pre-filter: keep 2× beam_width candidates by cheap score, then
+                // re-score survivors with the full heuristic before final truncation.
+                // Reduces full BFS calls from 9W to 2W per depth (~78% savings).
+                let pre_cap = (self.beam_width * 2).min(next.len());
+                next.truncate(pre_cap);
+                for item in &mut next {
+                    item.2 = (self.heuristic_fn)(&item.1, player);
+                }
+                next.sort_unstable_by(|a, b| b.2.cmp(&a.2));
+            }
             next.truncate(self.beam_width);
             result = dirmap_to_hashmap(player, &next[0].0);
             total_states += next.len() as u32;

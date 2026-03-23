@@ -76,6 +76,9 @@ fn make_bot(name: &str, time_limit_ms: u64) -> Box<dyn Bot> {
         "beam_w80"      => Box::new(BeamSearchBot::new( 80, 200, time_limit_ms, old_heuristic)),
         "beam_w160"     => Box::new(BeamSearchBot::new(160, 200, time_limit_ms, old_heuristic)),
         "beam_w200"     => Box::new(BeamSearchBot::new(200, 200, time_limit_ms, old_heuristic)),
+        // Lazy heuristic eval: cheap O(1) pre-filter, full BFS re-score for survivors.
+        // beam_lazy = w160, old_heuristic with lazy eval enabled
+        "beam_lazy"     => Box::new(BeamSearchBot::new_lazy(160, 200, time_limit_ms, old_heuristic)),
         // Same heuristic as old beam_v1 but uses gen_action_combos + step(&HashMap) — benchmark only.
         "beam_hashmap"  => Box::new(BeamHashMapBot::new(120, 200, time_limit_ms, heuristic_v1)),
         "mcts"          => Box::new(MctsBot::new(time_limit_ms, 6, 1.41)),
